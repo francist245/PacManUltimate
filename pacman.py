@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
 PAC-MAN ULTIMATE - A Classic Pac-Man Game with AI Ghosts, Minigames & Intense Music!
-Built by Toby with help from Copilot 🎮
+Built by Toby with help from Copilot
 """
 
 import pygame
+import pygame.gfxdraw
 import sys
 import math
 import random
@@ -44,6 +45,299 @@ DOT_COL = (255, 183, 174)
 PURPLE  = (148, 0, 211)
 GREEN   = (0, 200, 0)
 GREY    = (128, 128, 128)
+GOLD    = (255, 215, 0)
+
+# ─── PARTICLE SYSTEM ────────────────────────────────────────────────────────
+class Particle:
+    """A single visual particle with physics and fade."""
+    __slots__ = ['x', 'y', 'vx', 'vy', 'color', 'life', 'max_life', 'size', 'gravity', 'shape']
+
+    def __init__(self, x, y, vx, vy, color, life, size=3, gravity=0, shape='circle'):
+        self.x = x
+        self.y = y
+        self.vx = vx
+        self.vy = vy
+        self.color = color
+        self.life = life
+        self.max_life = life
+        self.size = size
+        self.gravity = gravity
+        self.shape = shape
+
+    def update(self, dt):
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+        self.vy += self.gravity * dt
+        self.vx *= 0.98
+        self.life -= dt
+        return self.life > 0
+
+    def draw(self, surface):
+        alpha = max(0, min(255, int(255 * (self.life / self.max_life))))
+        r = max(1, int(self.size * (self.life / self.max_life)))
+        col = (*self.color[:3], alpha)
+        if self.shape == 'circle':
+            if r > 1:
+                try:
+                    pygame.gfxdraw.filled_circle(surface, int(self.x), int(self.y), r, col)
+                    pygame.gfxdraw.aacircle(surface, int(self.x), int(self.y), r, col)
+                except (ValueError, OverflowError):
+                    pass
+            else:
+                try:
+                    surface.set_at((int(self.x), int(self.y)), col[:3])
+                except IndexError:
+                    pass
+        elif self.shape == 'spark':
+            end_x = self.x + self.vx * 0.03
+            end_y = self.y + self.vy * 0.03
+            try:
+                pygame.draw.aaline(surface, col[:3], (self.x, self.y), (end_x, end_y))
+            except (ValueError, OverflowError):
+                pass
+        elif self.shape == 'star':
+            for angle_off in range(0, 360, 72):
+                rad = math.radians(angle_off + self.life * 200)
+                ex = self.x + r * math.cos(rad)
+                ey = self.y + r * math.sin(rad)
+                try:
+                    pygame.draw.aaline(surface, col[:3], (self.x, self.y), (ex, ey))
+                except (ValueError, OverflowError):
+                    pass
+
+
+class ParticleSystem:
+    """Manages all active particles."""
+    def __init__(self):
+        self.particles = []
+
+    def emit_dot_eat(self, x, y, color):
+        """Small sparkle burst when eating a dot."""
+        for _ in range(6):
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(30, 80)
+            self.particles.append(Particle(
+                x, y, math.cos(angle) * speed, math.sin(angle) * speed,
+                color, random.uniform(0.2, 0.4), size=2, shape='spark'
+            ))
+
+    def emit_power_pellet(self, x, y):
+        """Big radial glow burst for power pellet."""
+        for _ in range(20):
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(50, 180)
+            colors = [YELLOW, WHITE, CYAN, (255, 100, 255)]
+            self.particles.append(Particle(
+                x, y, math.cos(angle) * speed, math.sin(angle) * speed,
+                random.choice(colors), random.uniform(0.4, 0.9),
+                size=random.randint(2, 5), shape='circle'
+            ))
+        # Shockwave ring
+        for i in range(24):
+            angle = i * (2 * math.pi / 24)
+            self.particles.append(Particle(
+                x, y, math.cos(angle) * 150, math.sin(angle) * 150,
+                WHITE, 0.3, size=2, shape='spark'
+            ))
+
+    def emit_ghost_eat(self, x, y, ghost_color):
+        """Explosion when eating a ghost."""
+        for _ in range(30):
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(60, 200)
+            self.particles.append(Particle(
+                x, y, math.cos(angle) * speed, math.sin(angle) * speed,
+                ghost_color, random.uniform(0.3, 0.8),
+                size=random.randint(2, 6), gravity=100, shape='circle'
+            ))
+        for _ in range(8):
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(40, 120)
+            self.particles.append(Particle(
+                x, y, math.cos(angle) * speed, math.sin(angle) * speed,
+                WHITE, random.uniform(0.5, 1.0), size=4, shape='star'
+            ))
+
+    def emit_death(self, x, y):
+        """Dramatic death burst."""
+        for _ in range(50):
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(30, 250)
+            self.particles.append(Particle(
+                x, y, math.cos(angle) * speed, math.sin(angle) * speed,
+                YELLOW, random.uniform(0.5, 1.5),
+                size=random.randint(2, 7), gravity=150, shape='circle'
+            ))
+        for _ in range(15):
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(80, 200)
+            self.particles.append(Particle(
+                x, y, math.cos(angle) * speed, math.sin(angle) * speed,
+                RED, random.uniform(0.3, 0.8), size=3, shape='spark'
+            ))
+
+    def emit_level_clear(self):
+        """Fireworks across the whole screen."""
+        for _ in range(8):
+            cx = random.randint(50, WIDTH - 50)
+            cy = random.randint(80, HEIGHT - 80)
+            color = random.choice([YELLOW, CYAN, RED, PINK, GREEN, ORANGE, GOLD, WHITE])
+            for _ in range(25):
+                angle = random.uniform(0, 2 * math.pi)
+                speed = random.uniform(80, 250)
+                self.particles.append(Particle(
+                    cx, cy, math.cos(angle) * speed, math.sin(angle) * speed,
+                    color, random.uniform(0.5, 1.5),
+                    size=random.randint(2, 5), gravity=120, shape='circle'
+                ))
+
+    def emit_fruit(self, x, y):
+        """Sparkle ring for fruit pickup."""
+        for i in range(16):
+            angle = i * (2 * math.pi / 16)
+            self.particles.append(Particle(
+                x, y, math.cos(angle) * 100, math.sin(angle) * 100,
+                GOLD, 0.5, size=3, shape='star'
+            ))
+
+    def emit_trail(self, x, y, color):
+        """Small trail particle behind moving entity."""
+        self.particles.append(Particle(
+            x + random.uniform(-3, 3), y + random.uniform(-3, 3),
+            random.uniform(-10, 10), random.uniform(-10, 10),
+            color, random.uniform(0.1, 0.25), size=2, shape='circle'
+        ))
+
+    def update(self, dt):
+        self.particles = [p for p in self.particles if p.update(dt)]
+
+    def draw(self, surface):
+        for p in self.particles:
+            p.draw(surface)
+
+    def clear(self):
+        self.particles.clear()
+
+
+# ─── SCORE POPUP SYSTEM ─────────────────────────────────────────────────────
+class ScorePopup:
+    """Floating score text that rises and fades."""
+    def __init__(self, x, y, text, color, font):
+        self.x = x
+        self.y = y
+        self.text = text
+        self.color = color
+        self.font = font
+        self.life = 1.2
+        self.max_life = 1.2
+
+    def update(self, dt):
+        self.y -= 40 * dt
+        self.life -= dt
+        return self.life > 0
+
+    def draw(self, surface):
+        alpha = max(0, min(255, int(255 * (self.life / self.max_life))))
+        txt_surf = self.font.render(self.text, True, self.color)
+        txt_surf.set_alpha(alpha)
+        surface.blit(txt_surf, (int(self.x) - txt_surf.get_width() // 2, int(self.y)))
+
+
+class ScorePopupSystem:
+    """Manages floating score popups."""
+    def __init__(self):
+        self.popups = []
+
+    def add(self, x, y, text, color, font):
+        self.popups.append(ScorePopup(x, y, text, color, font))
+
+    def update(self, dt):
+        self.popups = [p for p in self.popups if p.update(dt)]
+
+    def draw(self, surface):
+        for p in self.popups:
+            p.draw(surface)
+
+    def clear(self):
+        self.popups.clear()
+
+
+# ─── SCREEN TRANSITION SYSTEM ───────────────────────────────────────────────
+class ScreenTransition:
+    """Handles fade, wipe, and pixelate screen transitions."""
+    def __init__(self):
+        self.active = False
+        self.type = 'fade'  # fade, wipe, flash
+        self.progress = 0.0
+        self.duration = 0.5
+        self.direction = 'in'  # in = going dark, out = coming back
+        self.callback = None
+        self.fade_surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        self.flash_color = WHITE
+
+    def start(self, trans_type='fade', duration=0.5, direction='in', callback=None, flash_color=WHITE):
+        self.active = True
+        self.type = trans_type
+        self.duration = duration
+        self.direction = direction
+        self.progress = 0.0
+        self.callback = callback
+        self.flash_color = flash_color
+
+    def update(self, dt):
+        if not self.active:
+            return
+        self.progress += dt / self.duration
+        if self.progress >= 1.0:
+            self.active = False
+            self.progress = 1.0
+            if self.callback:
+                self.callback()
+                self.callback = None
+
+    def draw(self, surface):
+        if not self.active:
+            return
+        t = self.progress if self.direction == 'in' else (1.0 - self.progress)
+
+        if self.type == 'fade':
+            alpha = int(255 * t)
+            self.fade_surface.fill((0, 0, 0, alpha))
+            surface.blit(self.fade_surface, (0, 0))
+
+        elif self.type == 'flash':
+            alpha = int(200 * (1.0 - t))
+            self.fade_surface.fill((*self.flash_color[:3], alpha))
+            surface.blit(self.fade_surface, (0, 0))
+
+        elif self.type == 'wipe':
+            wipe_x = int(WIDTH * t)
+            pygame.draw.rect(surface, BLACK, (0, 0, wipe_x, HEIGHT))
+
+
+# ─── SCREEN SHAKE ────────────────────────────────────────────────────────────
+class ScreenShake:
+    """Camera shake effect."""
+    def __init__(self):
+        self.intensity = 0
+        self.duration = 0
+        self.offset_x = 0
+        self.offset_y = 0
+
+    def start(self, intensity=5, duration=0.3):
+        self.intensity = intensity
+        self.duration = duration
+
+    def update(self, dt):
+        if self.duration > 0:
+            self.duration -= dt
+            self.offset_x = random.randint(-int(self.intensity), int(self.intensity))
+            self.offset_y = random.randint(-int(self.intensity), int(self.intensity))
+            self.intensity = max(0, self.intensity - dt * 10)
+        else:
+            self.offset_x = 0
+            self.offset_y = 0
+
 
 # ─── SOUND GENERATOR ────────────────────────────────────────────────────────
 def generate_tone(freq, duration_ms, volume=0.3, wave='square'):
@@ -391,16 +685,15 @@ def parse_maze(template):
 
 # ─── SPRITE DRAWING (CLASSIC PIXEL ART) ─────────────────────────────────────
 def draw_pacman(surface, x, y, direction, frame, size=TILE):
-    """Draw classic Pac-Man with animated mouth."""
+    """Draw classic Pac-Man with anti-aliased rendering."""
     cx, cy = x + size // 2, y + size // 2
     r = size // 2 - 2
     mouth_angle = abs(math.sin(frame * 0.3)) * 45
 
     if mouth_angle < 2:
-        pygame.draw.circle(surface, YELLOW, (cx, cy), r)
-        # Eye
-        ex, ey = cx - 2, cy - r // 2
-        pygame.draw.circle(surface, BLACK, (ex, ey), 2)
+        pygame.gfxdraw.filled_circle(surface, cx, cy, r, YELLOW)
+        pygame.gfxdraw.aacircle(surface, cx, cy, r, YELLOW)
+        pygame.gfxdraw.filled_circle(surface, cx - 2, cy - r // 2, 2, BLACK)
         return
 
     angles = {0: 0, 1: 180, 2: 270, 3: 90}  # right, left, down, up
@@ -409,16 +702,16 @@ def draw_pacman(surface, x, y, direction, frame, size=TILE):
     start_rad = math.radians(base + mouth_angle)
     end_rad = math.radians(base + 360 - mouth_angle)
 
-    # Draw filled arc as polygon
     points = [(cx, cy)]
-    steps = 30
+    steps = 36
     for i in range(steps + 1):
         angle = start_rad + (end_rad - start_rad) * i / steps
         px = cx + r * math.cos(angle)
         py = cy - r * math.sin(angle)
-        points.append((px, py))
+        points.append((int(px), int(py)))
     if len(points) > 2:
-        pygame.draw.polygon(surface, YELLOW, points)
+        pygame.gfxdraw.filled_polygon(surface, points, YELLOW)
+        pygame.gfxdraw.aapolygon(surface, points, YELLOW)
 
     # Eye
     if direction == 0:
@@ -429,10 +722,10 @@ def draw_pacman(surface, x, y, direction, frame, size=TILE):
         ex, ey = cx - r // 3, cy + 2
     else:
         ex, ey = cx - r // 3, cy - 2
-    pygame.draw.circle(surface, BLACK, (int(ex), int(ey)), 2)
+    pygame.gfxdraw.filled_circle(surface, int(ex), int(ey), 2, BLACK)
 
 def draw_ghost(surface, x, y, color, direction, frame, scared=False, size=TILE):
-    """Draw a classic ghost sprite."""
+    """Draw a classic ghost sprite with anti-aliased rendering."""
     cx, cy = x + size // 2, y + size // 2
     r = size // 2 - 2
 
@@ -440,30 +733,33 @@ def draw_ghost(surface, x, y, color, direction, frame, scared=False, size=TILE):
     if scared and frame % 20 < 10:
         body_color = WHITE
 
-    # Body (rounded top + rectangle bottom)
-    pygame.draw.circle(surface, body_color, (cx, cy - 2), r)
+    # Body (rounded top + rectangle bottom) — AA
+    pygame.gfxdraw.filled_circle(surface, cx, cy - 2, r, body_color)
+    pygame.gfxdraw.aacircle(surface, cx, cy - 2, r, body_color)
     pygame.draw.rect(surface, body_color, (x + 2, cy - 2, size - 4, r + 2))
 
-    # Wavy bottom
-    wave_offset = (frame % 10) / 10
+    # Wavy bottom with smoother curves
     num_waves = 3
     wave_w = (size - 4) / num_waves
     for i in range(num_waves):
         wx = x + 2 + i * wave_w
         wy = cy + r
-        peak = 4 if (i + int(frame / 5)) % 2 == 0 else 0
+        peak = 5 if (i + int(frame / 5)) % 2 == 0 else 0
         points = [
-            (wx, wy),
-            (wx + wave_w / 2, wy + peak),
-            (wx + wave_w, wy),
+            (int(wx), int(wy)),
+            (int(wx + wave_w * 0.25), int(wy + peak * 0.5)),
+            (int(wx + wave_w / 2), int(wy + peak)),
+            (int(wx + wave_w * 0.75), int(wy + peak * 0.5)),
+            (int(wx + wave_w), int(wy)),
         ]
-        pygame.draw.polygon(surface, body_color, points)
+        pygame.gfxdraw.filled_polygon(surface, points, body_color)
 
     # Eyes
     if scared:
-        # Scared face - simple dots
-        pygame.draw.circle(surface, WHITE, (cx - 4, cy - 4), 3)
-        pygame.draw.circle(surface, WHITE, (cx + 4, cy - 4), 3)
+        pygame.gfxdraw.filled_circle(surface, cx - 4, cy - 4, 3, WHITE)
+        pygame.gfxdraw.aacircle(surface, cx - 4, cy - 4, 3, WHITE)
+        pygame.gfxdraw.filled_circle(surface, cx + 4, cy - 4, 3, WHITE)
+        pygame.gfxdraw.aacircle(surface, cx + 4, cy - 4, 3, WHITE)
         # Wavy mouth
         mouth_points = []
         for i in range(7):
@@ -471,29 +767,31 @@ def draw_ghost(surface, x, y, color, direction, frame, scared=False, size=TILE):
             my = cy + 3 + (2 if i % 2 == 0 else -1)
             mouth_points.append((mx, my))
         if len(mouth_points) > 1:
-            pygame.draw.lines(surface, WHITE, False, mouth_points, 1)
+            pygame.draw.aalines(surface, WHITE, False, mouth_points)
     else:
-        # Normal eyes
         for offset in [-4, 4]:
-            # White of eye
-            pygame.draw.circle(surface, WHITE, (cx + offset, cy - 4), 4)
-            # Pupil (follows direction)
+            pygame.gfxdraw.filled_circle(surface, cx + offset, cy - 4, 4, WHITE)
+            pygame.gfxdraw.aacircle(surface, cx + offset, cy - 4, 4, WHITE)
             dx = {0: 2, 1: -2, 2: 0, 3: 0}.get(direction, 0)
             dy = {0: 0, 1: 0, 2: 2, 3: -2}.get(direction, 0)
-            pygame.draw.circle(surface, BLUE, (cx + offset + dx, cy - 4 + dy), 2)
+            pygame.gfxdraw.filled_circle(surface, cx + offset + dx, cy - 4 + dy, 2, BLUE)
 
 def draw_fruit(surface, x, y, fruit_type, size=TILE):
-    """Draw bonus fruit."""
+    """Draw bonus fruit with AA."""
     cx, cy = x + size // 2, y + size // 2
     if fruit_type == 'cherry':
-        pygame.draw.circle(surface, RED, (cx - 3, cy + 2), 4)
-        pygame.draw.circle(surface, RED, (cx + 3, cy + 2), 4)
-        pygame.draw.line(surface, GREEN, (cx - 3, cy - 2), (cx, cy - 6), 2)
-        pygame.draw.line(surface, GREEN, (cx + 3, cy - 2), (cx, cy - 6), 2)
+        pygame.gfxdraw.filled_circle(surface, cx - 3, cy + 2, 4, RED)
+        pygame.gfxdraw.aacircle(surface, cx - 3, cy + 2, 4, RED)
+        pygame.gfxdraw.filled_circle(surface, cx + 3, cy + 2, 4, RED)
+        pygame.gfxdraw.aacircle(surface, cx + 3, cy + 2, 4, RED)
+        pygame.draw.aaline(surface, GREEN, (cx - 3, cy - 2), (cx, cy - 6))
+        pygame.draw.aaline(surface, GREEN, (cx + 3, cy - 2), (cx, cy - 6))
     elif fruit_type == 'strawberry':
         points = [(cx, cy - 5), (cx - 5, cy + 2), (cx, cy + 6), (cx + 5, cy + 2)]
-        pygame.draw.polygon(surface, RED, points)
-        pygame.draw.circle(surface, GREEN, (cx, cy - 5), 3)
+        pygame.gfxdraw.filled_polygon(surface, points, RED)
+        pygame.gfxdraw.aapolygon(surface, points, RED)
+        pygame.gfxdraw.filled_circle(surface, cx, cy - 5, 3, GREEN)
+        pygame.gfxdraw.aacircle(surface, cx, cy - 5, 3, GREEN)
 
 # ─── SAFE AUDIO CHANNEL (no-ops when audio unavailable) ─────────────────────
 class SafeChannel:
@@ -706,6 +1004,7 @@ class PacManGame:
         self.font_med = pygame.font.SysFont('Consolas', 28, bold=True)
         self.font_sm  = pygame.font.SysFont('Consolas', 18)
         self.font_xs  = pygame.font.SysFont('Consolas', 14)
+        self.font_popup = pygame.font.SysFont('Consolas', 22, bold=True)
         self.menu_sel = 0
         self.frame = 0
         self.high_score = 0
@@ -714,6 +1013,11 @@ class PacManGame:
         self.gt_score = 0
         self.pf_score = 0
         self.last_mode = 'classic'
+        # Visual effects systems
+        self.particles = ParticleSystem()
+        self.popups = ScorePopupSystem()
+        self.transition = ScreenTransition()
+        self.shake = ScreenShake()
         self.reset_classic()
 
     # ─── CLASSIC MODE ────────────────────────────────────────────────────
@@ -910,11 +1214,14 @@ class PacManGame:
 
             # Eat dot
             tile = self.maze[self.pac_row][self.pac_col]
+            px = self.pac_col * TILE + TILE // 2
+            py = self.pac_row * TILE + TILE // 2 + 50
             if tile == 2:
                 self.maze[self.pac_row][self.pac_col] = 0
                 self.score += 10
                 self.dots_eaten += 1
                 self.sfx_channel.play(snd_chomp)
+                self.particles.emit_dot_eat(px, py, self.theme['dot'])
             elif tile == 3:
                 self.maze[self.pac_row][self.pac_col] = 0
                 self.score += 50
@@ -924,12 +1231,16 @@ class PacManGame:
                     g.frighten()
                 self.sfx_channel.play(snd_power)
                 self.music_channel.play(music_chase, loops=-1)
+                self.particles.emit_power_pellet(px, py)
+                self.shake.start(3, 0.2)
+                self.transition.start('flash', 0.15, 'out', flash_color=CYAN)
 
             # Check win
             if self.dots_eaten >= self.dots_total:
                 self.win_anim = 3.0
                 self.sfx_channel.play(snd_win)
                 self.music_channel.stop()
+                self.particles.emit_level_clear()
                 return
 
             # Fruit spawn
@@ -939,9 +1250,14 @@ class PacManGame:
 
             # Eat fruit
             if self.fruit_active and self.pac_col == self.fruit_col and self.pac_row == self.fruit_row:
-                self.score += 100 * self.level
+                pts = 100 * self.level
+                self.score += pts
                 self.fruit_active = False
                 self.sfx_channel.play(snd_eat_ghost)
+                fx = self.fruit_col * TILE + TILE // 2
+                fy = self.fruit_row * TILE + TILE // 2 + 50
+                self.particles.emit_fruit(fx, fy)
+                self.popups.add(fx, fy, f"+{pts}", GOLD, self.font_popup)
 
             # Try preferred direction first, then continue current
             can, nc, nr = self.can_move(self.pac_col, self.pac_row, self.pac_next_dir)
@@ -969,6 +1285,14 @@ class PacManGame:
                 dy = (self.pac_next_row - self.pac_row) * TILE * self.move_progress
                 self.pac_x = self.pac_col * TILE + dx
                 self.pac_y = self.pac_row * TILE + dy
+
+        # Pac-Man trail effect
+        if self.frame % 3 == 0 and self.death_anim <= 0:
+            self.particles.emit_trail(
+                int(self.pac_x) + TILE // 2,
+                int(self.pac_y) + TILE // 2 + 50,
+                YELLOW
+            )
 
         # Scatter/chase mode switching
         self.mode_timer += dt
@@ -999,13 +1323,24 @@ class PacManGame:
             if dist < TILE * 0.8:
                 if g.mode == Ghost.FRIGHTENED:
                     g.eaten = True
-                    self.score += 200 * (2 ** self.combo)
+                    pts = 200 * (2 ** self.combo)
+                    self.score += pts
                     self.combo += 1
                     self.sfx_channel.play(snd_eat_ghost)
+                    gx = int(g.x) + TILE // 2
+                    gy = int(g.y) + TILE // 2 + 50
+                    self.particles.emit_ghost_eat(gx, gy, g.color)
+                    self.popups.add(gx, gy, f"+{pts}", g.color, self.font_popup)
+                    self.shake.start(4, 0.15)
                 else:
                     self.death_anim = 1.5
                     self.sfx_channel.play(snd_death)
                     self.music_channel.stop()
+                    self._current_track = None
+                    dx = int(self.pac_x) + TILE // 2
+                    dy = int(self.pac_y) + TILE // 2 + 50
+                    self.particles.emit_death(dx, dy)
+                    self.shake.start(8, 0.5)
 
         # Fruit timer
         if self.fruit_active:
@@ -1201,19 +1536,39 @@ class PacManGame:
         dot_col = theme['dot']
         pellet_col = theme['pellet']
         gate_col = theme['gate']
+        # Dimmer wall fill for depth
+        wall_fill = tuple(max(0, c // 4) for c in wall_col)
         for r in range(ROWS):
             for c in range(COLS):
                 tile = self.maze[r][c]
                 x = c * TILE
                 y = r * TILE + y_offset
+                cx = x + TILE // 2
+                cy = y + TILE // 2
                 if tile == 1:
+                    # Filled wall with AA border
+                    pygame.draw.rect(screen, wall_fill, (x + 2, y + 2, TILE - 4, TILE - 4),
+                                     border_radius=3)
                     pygame.draw.rect(screen, wall_col, (x + 1, y + 1, TILE - 2, TILE - 2), 2,
                                      border_radius=4)
                 elif tile == 2:
-                    pygame.draw.circle(screen, dot_col, (x + TILE // 2, y + TILE // 2), 2)
+                    # AA dot
+                    pygame.gfxdraw.filled_circle(screen, cx, cy, 2, dot_col)
+                    pygame.gfxdraw.aacircle(screen, cx, cy, 2, dot_col)
                 elif tile == 3:
+                    # Power pellet with pulsing glow
                     if self.frame % 20 < 15:
-                        pygame.draw.circle(screen, pellet_col, (x + TILE // 2, y + TILE // 2), 6)
+                        pulse = abs(math.sin(self.frame * 0.15))
+                        glow_r = int(8 + 3 * pulse)
+                        # Outer glow
+                        glow_col = (*pellet_col[:3], int(60 * pulse))
+                        try:
+                            pygame.gfxdraw.filled_circle(screen, cx, cy, glow_r, glow_col)
+                        except (ValueError, OverflowError):
+                            pass
+                        # Core
+                        pygame.gfxdraw.filled_circle(screen, cx, cy, 5, pellet_col)
+                        pygame.gfxdraw.aacircle(screen, cx, cy, 5, pellet_col)
                 elif tile == 5:
                     pygame.draw.rect(screen, gate_col, (x, y + TILE // 2 - 2, TILE, 4))
 
@@ -1447,6 +1802,9 @@ class PacManGame:
                 p['alive'] = False
                 self.gt_score += 500
                 self.sfx_channel.play(snd_eat_ghost)
+                self.particles.emit_ghost_eat(int(p['x']) + TILE // 2, int(p['y']) + TILE // 2 + 40, YELLOW)
+                self.popups.add(int(p['x']) + TILE // 2, int(p['y']) + 40, '+500', CYAN, self.font_popup)
+                self.shake.start(4, 0.2)
 
     def draw_ghost_tag(self):
         screen.fill(BLACK)
@@ -1569,6 +1927,11 @@ class PacManGame:
                 self.pf_combo += 1
                 self.pf_score += 50 * self.pf_combo
                 self.sfx_channel.play(snd_power)
+                px = self.pf_pac_col * TILE + TILE // 2
+                py = self.pf_pac_row * TILE + TILE // 2 + 40
+                self.particles.emit_power_pellet(px, py)
+                self.popups.add(px, py, f'+{50 * self.pf_combo}', CYAN, self.font_popup)
+                self.shake.start(3, 0.15)
                 for g in self.pf_ghosts:
                     g['scared'] = True
                     g['scared_timer'] = 4.0
@@ -1655,11 +2018,18 @@ class PacManGame:
                     g['scared'] = False
                     self.pf_score += 200 * self.pf_combo
                     self.sfx_channel.play(snd_eat_ghost)
+                    gx = int(g['x']) + TILE // 2
+                    gy = int(g['y']) + TILE // 2 + 40
+                    self.particles.emit_ghost_eat(gx, gy, g['color'])
+                    self.popups.add(gx, gy, f'+{200 * self.pf_combo}', CYAN, self.font_popup)
+                    self.shake.start(4, 0.2)
                 else:
                     self.state = 'game_over'
                     self.high_score = max(self.high_score, self.pf_score)
                     self.sfx_channel.play(snd_death)
                     self.music_channel.stop()
+                    self.particles.emit_death(int(self.pf_pac_x) + TILE // 2, int(self.pf_pac_y) + TILE // 2 + 40)
+                    self.shake.start(8, 0.5)
                     return
 
     def draw_pellet_frenzy(self):
@@ -1852,6 +2222,8 @@ class PacManGame:
                             modes = ['classic', 'ghost_tag', 'pellet_frenzy']
                             self.state = modes[self.menu_sel]
                             self.last_mode = self.state
+                            self.particles.clear()
+                            self.popups.clear()
                             if self.state == 'classic':
                                 self.reset_classic()
                             elif self.state == 'ghost_tag':
@@ -1876,7 +2248,14 @@ class PacManGame:
             elif self.state == 'pellet_frenzy':
                 self.update_pellet_frenzy(dt, keys)
 
-            # Draw
+            # Update visual effects (always, even during transitions)
+            self.particles.update(dt)
+            self.popups.update(dt)
+            self.transition.update(dt)
+            self.shake.update(dt)
+
+            # Draw to offscreen then blit with shake offset
+            screen.fill(BLACK)
             if self.state == 'menu':
                 self.draw_menu()
             elif self.state == 'classic':
@@ -1887,6 +2266,17 @@ class PacManGame:
                 self.draw_pellet_frenzy()
             elif self.state == 'game_over':
                 self.draw_game_over()
+
+            # Draw particles and popups on top
+            self.particles.draw(screen)
+            self.popups.draw(screen)
+            self.transition.draw(screen)
+
+            # Apply screen shake
+            if self.shake.offset_x != 0 or self.shake.offset_y != 0:
+                shake_surf = screen.copy()
+                screen.fill(BLACK)
+                screen.blit(shake_surf, (self.shake.offset_x, self.shake.offset_y))
 
             pygame.display.flip()
 
