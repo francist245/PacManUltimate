@@ -1179,6 +1179,12 @@ class PacManGame:
         self.menu_sel = 0
         self.frame = 0
         self.high_score = 0
+        self.mode_high_scores = {
+            'classic': 0, 'ghost_tag': 0, 'pellet_frenzy': 0,
+            'boss_battle': 0, 'maze_runner': 0, 'survival': 0,
+            'invisible': 0, 'zombie': 0, 'royale': 0,
+            'sniper': 0, 'portal': 0, 'bomb': 0,
+        }
         self.music_channel = SafeChannel(0)
         self.sfx_channel = SafeChannel(1)
         self.gt_score = 0
@@ -1344,10 +1350,11 @@ class PacManGame:
                 if self.lives <= 0:
                     self.state = 'game_over'
                     self.high_score = max(self.high_score, self.score)
+                    if 'classic' in self.mode_high_scores:
+                        self.mode_high_scores['classic'] = max(self.mode_high_scores['classic'], self.score)
                     self.music_channel.stop()
                     return
                 self.reset_positions()
-            return
 
         # Win animation
         if self.win_anim > 0:
@@ -1884,6 +1891,8 @@ class PacManGame:
             self.gt_won = all_caught
             self.state = 'game_over'
             self.high_score = max(self.high_score, self.gt_score)
+            if 'ghost_tag' in self.mode_high_scores:
+                self.mode_high_scores['ghost_tag'] = max(self.mode_high_scores['ghost_tag'], self.gt_score)
             self.music_channel.stop()
             return
 
@@ -2085,6 +2094,8 @@ class PacManGame:
         if self.pf_timer <= 0:
             self.state = 'game_over'
             self.high_score = max(self.high_score, self.pf_score)
+            if 'pellet_frenzy' in self.mode_high_scores:
+                self.mode_high_scores['pellet_frenzy'] = max(self.mode_high_scores['pellet_frenzy'], self.pf_score)
             self.music_channel.stop()
             return
 
@@ -2672,6 +2683,8 @@ class PacManGame:
                 if self.bb_lives <= 0:
                     self.state = 'game_over'
                     self.high_score = max(self.high_score, self.bb_score)
+                    if 'boss_battle' in self.mode_high_scores:
+                        self.mode_high_scores['boss_battle'] = max(self.mode_high_scores['boss_battle'], self.bb_score)
                     self.music_channel.stop()
                     return
 
@@ -2686,6 +2699,8 @@ class PacManGame:
                     if self.bb_lives <= 0:
                         self.state = 'game_over'
                         self.high_score = max(self.high_score, self.bb_score)
+                        if 'boss_battle' in self.mode_high_scores:
+                            self.mode_high_scores['boss_battle'] = max(self.mode_high_scores['boss_battle'], self.bb_score)
                         self.music_channel.stop()
                         return
                     break
@@ -2913,6 +2928,8 @@ class PacManGame:
             if self.mr_end_timer <= 0:
                 self.state = 'game_over'
                 self.high_score = max(self.high_score, self.mr_final_score)
+                if 'maze_runner' in self.mode_high_scores:
+                    self.mode_high_scores['maze_runner'] = max(self.mode_high_scores['maze_runner'], self.mr_final_score)
             return
 
         if self.mr_ready > 0:
@@ -2940,6 +2957,8 @@ class PacManGame:
             self.mr_won = False
             self.state = 'game_over'
             self.high_score = max(self.high_score, self.mr_final_score)
+            if 'maze_runner' in self.mode_high_scores:
+                self.mode_high_scores['maze_runner'] = max(self.mode_high_scores['maze_runner'], self.mr_final_score)
             self.music_channel.stop()
             self.sfx_channel.play(snd_death)
             return
@@ -3240,6 +3259,8 @@ class PacManGame:
                     if self.sv_lives <= 0:
                         self.state = 'game_over'
                         self.high_score = max(self.high_score, self.sv_score)
+                        if 'survival' in self.mode_high_scores:
+                            self.mode_high_scores['survival'] = max(self.mode_high_scores['survival'], self.sv_score)
                         self.music_channel.stop()
                     return
 
@@ -3336,6 +3357,8 @@ class PacManGame:
             if self.iv_end_timer <= 0:
                 self.state = 'game_over'
                 self.high_score = max(self.high_score, self.iv_score)
+                if 'invisible' in self.mode_high_scores:
+                    self.mode_high_scores['invisible'] = max(self.mode_high_scores['invisible'], self.iv_score)
             return
 
         if self.iv_ready > 0:
@@ -3651,7 +3674,10 @@ class PacManGame:
 
     def _mode_finish_game_over(self, score):
         self.state = 'game_over'
-        self.high_score = max(self.high_score, int(score))
+        score = int(score)
+        self.high_score = max(self.high_score, score)
+        if self.last_mode in self.mode_high_scores:
+            self.mode_high_scores[self.last_mode] = max(self.mode_high_scores[self.last_mode], score)
         self.music_channel.stop()
         self._current_track = None
 
@@ -5304,9 +5330,13 @@ class PacManGame:
                     screen.blit(label, (WIDTH // 2 - label.get_width() // 2, board_y))
                     board_y += 28
 
+        mode_best = self.mode_high_scores.get(self.last_mode, 0)
+        if mode_best > 0:
+            hs = self.font_sm.render(f"Mode Best: {mode_best}", True, GOLD)
+            screen.blit(hs, (WIDTH // 2 - hs.get_width() // 2, HEIGHT // 2 + 80))
         if self.high_score > 0:
-            hs = self.font_sm.render(f"Personal Best: {self.high_score}", True, GREY)
-            screen.blit(hs, (WIDTH // 2 - hs.get_width() // 2, HEIGHT // 2 + 100))
+            hs = self.font_sm.render(f"Overall Best: {self.high_score}", True, GREY)
+            screen.blit(hs, (WIDTH // 2 - hs.get_width() // 2, HEIGHT // 2 + 105))
 
         retry = self.font_sm.render("Press ENTER to continue  •  ESC for menu", True, GREY)
         screen.blit(retry, (WIDTH // 2 - retry.get_width() // 2, HEIGHT - 40))
