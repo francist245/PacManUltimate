@@ -1283,7 +1283,7 @@ class PacManGame:
         self.ghosts[0].y = 11 * TILE
         for i, g in enumerate(self.ghosts):
             g.release_timer = release_offsets[i]
-            g.speed = 0.9 + self.level * 0.05
+            g.speed = min(2.0, 0.9 + self.level * 0.05)
 
     def reset_positions(self):
         self.pac_col = 13
@@ -1934,10 +1934,15 @@ class PacManGame:
                     self.gt_ghost_next_col = self.gt_ghost_col
                     self.gt_ghost_next_row = self.gt_ghost_row
         else:
-            dx = (self.gt_ghost_next_col - self.gt_ghost_col) * TILE * self.gt_move_progress
-            dy = (self.gt_ghost_next_row - self.gt_ghost_row) * TILE * self.gt_move_progress
-            self.gt_ghost_x = self.gt_ghost_col * TILE + dx
-            self.gt_ghost_y = self.gt_ghost_row * TILE + dy
+            dcol = self.gt_ghost_next_col - self.gt_ghost_col
+            if abs(dcol) > 1:
+                self.gt_ghost_x = self.gt_ghost_next_col * TILE
+                self.gt_ghost_y = self.gt_ghost_next_row * TILE
+            else:
+                dx = dcol * TILE * self.gt_move_progress
+                dy = (self.gt_ghost_next_row - self.gt_ghost_row) * TILE * self.gt_move_progress
+                self.gt_ghost_x = self.gt_ghost_col * TILE + dx
+                self.gt_ghost_y = self.gt_ghost_row * TILE + dy
 
         # Update AI Pac-Men (run away from ghost)
         dc_map = {0: 1, 1: -1, 2: 0, 3: 0}
@@ -1973,6 +1978,14 @@ class PacManGame:
                             p['next_col'] = nc
                             p['next_row'] = nr
                 p['dir'] = best_dir
+            else:
+                dcol = p['next_col'] - p['col']
+                if abs(dcol) > 1:
+                    p['x'] = p['next_col'] * TILE
+                    p['y'] = p['next_row'] * TILE
+                else:
+                    p['x'] = p['col'] * TILE + dcol * TILE * p['move_progress']
+                    p['y'] = p['row'] * TILE + (p['next_row'] - p['row']) * TILE * p['move_progress']
 
             # Catch detection
             dist = math.sqrt((p['x'] - self.gt_ghost_x) ** 2 + (p['y'] - self.gt_ghost_y) ** 2)
@@ -2136,10 +2149,15 @@ class PacManGame:
                     self.pf_pac_next_col = self.pf_pac_col
                     self.pf_pac_next_row = self.pf_pac_row
         else:
-            dx = (self.pf_pac_next_col - self.pf_pac_col) * TILE * self.pf_move_progress
-            dy = (self.pf_pac_next_row - self.pf_pac_row) * TILE * self.pf_move_progress
-            self.pf_pac_x = self.pf_pac_col * TILE + dx
-            self.pf_pac_y = self.pf_pac_row * TILE + dy
+            dcol = self.pf_pac_next_col - self.pf_pac_col
+            if abs(dcol) > 1:
+                self.pf_pac_x = self.pf_pac_next_col * TILE
+                self.pf_pac_y = self.pf_pac_next_row * TILE
+            else:
+                dx = dcol * TILE * self.pf_move_progress
+                dy = (self.pf_pac_next_row - self.pf_pac_row) * TILE * self.pf_move_progress
+                self.pf_pac_x = self.pf_pac_col * TILE + dx
+                self.pf_pac_y = self.pf_pac_row * TILE + dy
 
         # Update ghosts
         dc_map = {0: 1, 1: -1, 2: 0, 3: 0}
@@ -2519,19 +2537,19 @@ class PacManGame:
         boss_speed = 3.0 + self.bb_boss_phase * 1.5 + (self.bb_level - 1) * 0.5
 
         # Boss charges toward player sometimes
-        self.bb_boss_charge_timer -= dt
-        if self.bb_boss_charge_timer <= 0 and not self.bb_boss_charging:
-            if random.random() < 0.02 * self.bb_boss_phase:
-                self.bb_boss_charging = True
-                dx = self.bb_pac_x - self.bb_boss_x
-                dy = self.bb_pac_y - self.bb_boss_y
-                if abs(dx) > abs(dy):
-                    self.bb_boss_charge_dir = 0 if dx > 0 else 1
-                else:
-                    self.bb_boss_charge_dir = 2 if dy > 0 else 3
-                self.bb_boss_charge_timer = 2.0
-
-        if self.bb_boss_charging:
+        if not self.bb_boss_charging:
+            self.bb_boss_charge_timer -= dt
+            if self.bb_boss_charge_timer <= 0:
+                if random.random() < 0.02 * self.bb_boss_phase:
+                    self.bb_boss_charging = True
+                    dx = self.bb_pac_x - self.bb_boss_x
+                    dy = self.bb_pac_y - self.bb_boss_y
+                    if abs(dx) > abs(dy):
+                        self.bb_boss_charge_dir = 0 if dx > 0 else 1
+                    else:
+                        self.bb_boss_charge_dir = 2 if dy > 0 else 3
+                    self.bb_boss_charge_timer = 2.0
+        else:
             self.bb_boss_charge_timer -= dt
             if self.bb_boss_charge_timer <= 0:
                 self.bb_boss_charging = False
@@ -4133,6 +4151,7 @@ class PacManGame:
         self.sn_ghosts = []
         self.sn_shots = []
         self.sn_combo = 0
+        self.sn_best_combo = 0
         self.sn_kills = 0
         self.sn_mega_charges = 0
         self.sn_next_mega = 30
@@ -4168,6 +4187,7 @@ class PacManGame:
 
     def _sn_score_hit(self, x, y, color):
         self.sn_combo = min(10, max(1, self.sn_combo + 1))
+        self.sn_best_combo = max(self.sn_best_combo, self.sn_combo)
         pts = 100 * self.sn_combo
         self.sn_score += pts
         self.sn_kills += 1
@@ -5240,7 +5260,7 @@ class PacManGame:
                 sc = self.sn_score
                 result_text = "OVERWHELMED!"
                 result_color = RED
-                detail_text = f"Ghosts blasted: {self.sn_kills}  •  Best combo x{max(1, self.sn_combo)}"
+                detail_text = f"Ghosts blasted: {self.sn_kills}  •  Best combo x{max(1, self.sn_best_combo)}"
             elif self.last_mode == 'portal':
                 mode_name = "PORTAL MADNESS"
                 sc = self.pt_score
