@@ -1170,7 +1170,7 @@ class Ghost:
 # ─── MAIN GAME CLASS ────────────────────────────────────────────────────────
 class PacManGame:
     def __init__(self):
-        self.state = 'menu'  # menu, customise, level_select, classic, ghost_tag, pellet_frenzy, game_over, you_win
+        self.state = 'menu'  # menu, customise, level_select, classic, ghost_tag, pellet_frenzy, boss_battle, maze_runner, survival, invisible, game_over
         self.font_big = pygame.font.SysFont('Consolas', 48, bold=True)
         self.font_med = pygame.font.SysFont('Consolas', 28, bold=True)
         self.font_sm  = pygame.font.SysFont('Consolas', 18)
@@ -2825,6 +2825,727 @@ class PacManGame:
             bonus = self.font_med.render(f"+{5000 * self.bb_level} BONUS!  Next: Level {self.bb_level + 1}", True, YELLOW)
             screen.blit(bonus, (WIDTH // 2 - bonus.get_width() // 2, HEIGHT // 2 + 20))
 
+    def _mode_random_dir(self, maze, col, row, current_dir):
+        reverse = {0: 1, 1: 0, 2: 3, 3: 2}
+        options = []
+        for direction in range(4):
+            ok, nc, nr = self._bb_can_move(maze, col, row, direction)
+            if ok:
+                options.append((direction, nc, nr))
+        if not options:
+            return current_dir, col, row
+        non_reverse = [opt for opt in options if opt[0] != reverse.get(current_dir, -1)]
+        direction, nc, nr = random.choice(non_reverse or options)
+        return direction, nc, nr
+
+    def _mode_random_open_tile(self, maze, edge_only=False):
+        tiles = []
+        if edge_only:
+            for c in range(1, COLS - 1):
+                for r in (1, ROWS - 2):
+                    if maze[r][c] not in (1, 4, 5):
+                        tiles.append((c, r))
+            for r in range(1, ROWS - 1):
+                for c in (1, COLS - 2):
+                    if maze[r][c] not in (1, 4, 5):
+                        tiles.append((c, r))
+        else:
+            for r in range(ROWS):
+                for c in range(COLS):
+                    if maze[r][c] not in (1, 4, 5):
+                        tiles.append((c, r))
+        return random.choice(tiles) if tiles else (13, 23)
+
+    # ─── MAZE RUNNER MODE ────────────────────────────────────────────────
+    def reset_maze_runner(self):
+        self.mr_maze_idx = random.randrange(len(ALL_MAZES))
+        self.mr_maze = parse_maze(ALL_MAZES[self.mr_maze_idx])
+        self.mr_theme = LEVEL_THEMES[self.mr_maze_idx % len(LEVEL_THEMES)]
+        start_positions = [(13, 23), (14, 23), (13, 14), (1, 1), (26, 29)]
+        start_col, start_row = self._mode_random_open_tile(self.mr_maze)
+        for sc, sr in start_positions:
+            if self.mr_maze[sr][sc] not in (1, 4, 5):
+                start_col, start_row = sc, sr
+                break
+        self.mr_pac_col = start_col
+        self.mr_pac_row = start_row
+        self.mr_pac_x = self.mr_pac_col * TILE
+        self.mr_pac_y = self.mr_pac_row * TILE
+        self.mr_pac_dir = 0
+        self.mr_pac_next_dir = 0
+        self.mr_move_progress = 0.0
+        self.mr_pac_next_col = self.mr_pac_col
+        self.mr_pac_next_row = self.mr_pac_row
+        self.mr_timer = 60.0
+        self.mr_elapsed = 0.0
+        self.mr_ready = 2.0
+        self.mr_score = 0
+        self.mr_final_score = 0
+        self.mr_bonus_points = 0
+        self.mr_dots_total = sum(row.count(2) + row.count(3) for row in self.mr_maze)
+        self.mr_dots_eaten = 0
+        self.mr_completion_time = 0.0
+        self.mr_end_timer = 0.0
+        self.mr_won = False
+        self.mr_result_text = ""
+
+    def update_maze_runner(self, dt, keys_pressed):
+        if self.mr_end_timer > 0:
+            self.mr_end_timer -= dt
+            if self.mr_end_timer <= 0:
+                self.state = 'game_over'
+                self.high_score = max(self.high_score, self.mr_final_score)
+            return
+
+        if self.mr_ready > 0:
+            self.mr_ready -= dt
+            return
+
+        if not self.music_channel.get_busy():
+            self.music_channel.play(music_chase, loops=-1)
+
+        if keys_pressed[pygame.K_RIGHT] or keys_pressed[pygame.K_d]:
+            self.mr_pac_next_dir = 0
+        elif keys_pressed[pygame.K_LEFT] or keys_pressed[pygame.K_a]:
+            self.mr_pac_next_dir = 1
+        elif keys_pressed[pygame.K_DOWN] or keys_pressed[pygame.K_s]:
+            self.mr_pac_next_dir = 2
+        elif keys_pressed[pygame.K_UP] or keys_pressed[pygame.K_w]:
+            self.mr_pac_next_dir = 3
+
+        self.mr_elapsed += dt
+        self.mr_timer = max(0.0, self.mr_timer - dt)
+        self.mr_score = self.mr_dots_eaten * max(1, int(self.mr_timer) + 1)
+        if self.mr_timer <= 0:
+            self.mr_final_score = self.mr_score
+            self.mr_result_text = "TIME'S UP!"
+            self.mr_won = False
+            self.state = 'game_over'
+            self.high_score = max(self.high_score, self.mr_final_score)
+            self.music_channel.stop()
+            self.sfx_channel.play(snd_death)
+            return
+
+        speed = 9.6
+        self.mr_move_progress += speed * dt
+        if self.mr_move_progress >= 1.0:
+            self.mr_move_progress = 0.0
+            self.mr_pac_col = self.mr_pac_next_col
+            self.mr_pac_row = self.mr_pac_next_row
+            self.mr_pac_x = self.mr_pac_col * TILE
+            self.mr_pac_y = self.mr_pac_row * TILE
+
+            tile = self.mr_maze[self.mr_pac_row][self.mr_pac_col]
+            px = self.mr_pac_col * TILE + TILE // 2
+            py = self.mr_pac_row * TILE + TILE // 2 + 40
+            if tile == 2:
+                self.mr_maze[self.mr_pac_row][self.mr_pac_col] = 0
+                self.mr_dots_eaten += 1
+                self.mr_timer += 0.5
+                self.sfx_channel.play(snd_chomp)
+                self.particles.emit_dot_eat(px, py, self.mr_theme['dot'])
+                self.popups.add(px, py, "+0.5s", CYAN, self.font_popup)
+            elif tile == 3:
+                self.mr_maze[self.mr_pac_row][self.mr_pac_col] = 0
+                self.mr_dots_eaten += 1
+                self.mr_timer += 3.0
+                self.sfx_channel.play(snd_power)
+                self.particles.emit_power_pellet(px, py)
+                self.popups.add(px, py, "+3.0s", GOLD, self.font_popup)
+                self.shake.start(3, 0.15)
+
+            self.mr_score = self.mr_dots_eaten * max(1, int(self.mr_timer) + 1)
+            if self.mr_dots_eaten >= self.mr_dots_total:
+                self.mr_won = True
+                self.mr_completion_time = self.mr_elapsed
+                self.mr_bonus_points = int(self.mr_timer * 100)
+                self.mr_final_score = self.mr_score + self.mr_bonus_points
+                self.mr_score = self.mr_final_score
+                self.mr_result_text = "MAZE CLEARED!"
+                self.popups.add(px, py - 20, f"+{self.mr_bonus_points} BONUS!", YELLOW, self.font_popup)
+                self.particles.emit_level_clear()
+                self.sfx_channel.play(snd_win)
+                self.music_channel.stop()
+                self.mr_end_timer = 2.8
+                return
+
+            ok, nc, nr = self._bb_can_move(self.mr_maze, self.mr_pac_col, self.mr_pac_row, self.mr_pac_next_dir)
+            if ok:
+                self.mr_pac_dir = self.mr_pac_next_dir
+                self.mr_pac_next_col = nc
+                self.mr_pac_next_row = nr
+            else:
+                ok, nc, nr = self._bb_can_move(self.mr_maze, self.mr_pac_col, self.mr_pac_row, self.mr_pac_dir)
+                if ok:
+                    self.mr_pac_next_col = nc
+                    self.mr_pac_next_row = nr
+                else:
+                    self.mr_pac_next_col = self.mr_pac_col
+                    self.mr_pac_next_row = self.mr_pac_row
+        else:
+            dcol = self.mr_pac_next_col - self.mr_pac_col
+            if abs(dcol) > 1:
+                self.mr_pac_x = self.mr_pac_next_col * TILE
+            else:
+                self.mr_pac_x = self.mr_pac_col * TILE + dcol * TILE * self.mr_move_progress
+            self.mr_pac_y = self.mr_pac_row * TILE + (self.mr_pac_next_row - self.mr_pac_row) * TILE * self.mr_move_progress
+
+        if self.frame % 3 == 0:
+            self.particles.emit_trail(self.mr_pac_x + TILE // 2, self.mr_pac_y + TILE // 2 + 40, pac_custom['colour'])
+
+    def draw_maze_runner(self):
+        screen.fill(self.mr_theme['bg'])
+        y_off = 40
+
+        score_txt = self.font_sm.render(f"🏁 SCORE: {self.mr_score}", True, YELLOW)
+        screen.blit(score_txt, (10, 7))
+        dots_left = self.mr_dots_total - self.mr_dots_eaten
+        dots_txt = self.font_sm.render(f"DOTS: {self.mr_dots_eaten}/{self.mr_dots_total}  LEFT: {dots_left}", True, WHITE)
+        screen.blit(dots_txt, (10, 28))
+        timer_col = RED if self.mr_timer < 10 else CYAN
+        timer_txt = self.font_big.render(f"{self.mr_timer:04.1f}", True, timer_col)
+        screen.blit(timer_txt, (WIDTH // 2 - timer_txt.get_width() // 2, 2))
+        mult_txt = self.font_sm.render(f"TIME BONUS x{max(1, int(self.mr_timer) + 1)}", True, GOLD)
+        screen.blit(mult_txt, (WIDTH - mult_txt.get_width() - 10, 16))
+
+        wall_fill = tuple(max(0, c // 4) for c in self.mr_theme['wall'])
+        for r in range(ROWS):
+            for c in range(COLS):
+                tile = self.mr_maze[r][c]
+                x = c * TILE
+                y = r * TILE + y_off
+                cx = x + TILE // 2
+                cy = y + TILE // 2
+                if tile == 1:
+                    pygame.draw.rect(screen, wall_fill, (x + 2, y + 2, TILE - 4, TILE - 4), border_radius=3)
+                    pygame.draw.rect(screen, self.mr_theme['wall'], (x + 1, y + 1, TILE - 2, TILE - 2), 2, border_radius=4)
+                elif tile == 2:
+                    pygame.gfxdraw.filled_circle(screen, cx, cy, 2, self.mr_theme['dot'])
+                    pygame.gfxdraw.aacircle(screen, cx, cy, 2, self.mr_theme['dot'])
+                elif tile == 3 and self.frame % 20 < 15:
+                    pygame.gfxdraw.filled_circle(screen, cx, cy, 5, self.mr_theme['pellet'])
+                    pygame.gfxdraw.aacircle(screen, cx, cy, 5, self.mr_theme['pellet'])
+
+        draw_pacman(screen, int(self.mr_pac_x), int(self.mr_pac_y) + y_off, self.mr_pac_dir, self.frame)
+
+        if self.mr_ready > 0:
+            txt = self.font_big.render("MAZE RUN!", True, YELLOW)
+            screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
+        elif self.mr_end_timer > 0:
+            done = self.font_big.render(self.mr_result_text, True, GREEN)
+            screen.blit(done, (WIDTH // 2 - done.get_width() // 2, HEIGHT // 2 - 45))
+            time_txt = self.font_med.render(f"Finished in {self.mr_completion_time:.1f}s  •  Bonus +{self.mr_bonus_points}", True, WHITE)
+            screen.blit(time_txt, (WIDTH // 2 - time_txt.get_width() // 2, HEIGHT // 2 + 10))
+
+    # ─── SURVIVAL MODE ───────────────────────────────────────────────────
+    def reset_survival(self):
+        self.sv_maze = parse_maze(BOSS_ARENA)
+        self.sv_pac_col = 14
+        self.sv_pac_row = 15
+        self.sv_pac_x = self.sv_pac_col * TILE
+        self.sv_pac_y = self.sv_pac_row * TILE
+        self.sv_pac_dir = 3
+        self.sv_pac_next_dir = 3
+        self.sv_move_progress = 0.0
+        self.sv_pac_next_col = self.sv_pac_col
+        self.sv_pac_next_row = self.sv_pac_row
+        self.sv_score = 0
+        self.sv_time = 0.0
+        self.sv_score_tick = 0.0
+        self.sv_spawn_timer = 3.0
+        self.sv_spawn_interval = 3.0
+        self.sv_ready = 2.0
+        self.sv_lives = 3
+        self.sv_invincible = 0.0
+        self.sv_ghosts = []
+        self.sv_power_pellet = None
+        self.sv_power_spawn_timer = 15.0
+        self.sv_power_mode = 0.0
+        self.sv_ghosts_eaten = 0
+
+    def update_survival(self, dt, keys_pressed):
+        if self.sv_ready > 0:
+            self.sv_ready -= dt
+            return
+
+        if not self.music_channel.get_busy():
+            self.music_channel.play(music_chase, loops=-1)
+
+        self.sv_time += dt
+        self.sv_score_tick += dt
+        while self.sv_score_tick >= 1.0:
+            self.sv_score += 10
+            self.sv_score_tick -= 1.0
+
+        if self.sv_invincible > 0:
+            self.sv_invincible -= dt
+        if self.sv_power_mode > 0:
+            self.sv_power_mode = max(0.0, self.sv_power_mode - dt)
+
+        self.sv_power_spawn_timer -= dt
+        if self.sv_power_spawn_timer <= 0:
+            self.sv_power_spawn_timer += 15.0
+            self.sv_power_pellet = self._mode_random_open_tile(self.sv_maze)
+            px = self.sv_power_pellet[0] * TILE + TILE // 2
+            py = self.sv_power_pellet[1] * TILE + TILE // 2 + 40
+            self.popups.add(px, py, "POWER!", CYAN, self.font_popup)
+
+        self.sv_spawn_interval = max(0.5, 3.0 - self.sv_time * 0.05)
+        self.sv_spawn_timer -= dt
+        if self.sv_spawn_timer <= 0 and len(self.sv_ghosts) < 15:
+            self.sv_spawn_timer = self.sv_spawn_interval
+            gc, gr = self._mode_random_open_tile(self.sv_maze, edge_only=True)
+            ghost_speed = min(9.0, 5.2 + self.sv_time * 0.04)
+            direction, nc, nr = self._mode_random_dir(self.sv_maze, gc, gr, random.randint(0, 3))
+            self.sv_ghosts.append({
+                'col': gc, 'row': gr, 'x': gc * TILE, 'y': gr * TILE,
+                'dir': direction, 'next_col': nc, 'next_row': nr,
+                'move_progress': 0.0, 'speed': ghost_speed,
+                'color': random.choice([RED, PINK, CYAN, ORANGE, PURPLE, GREEN]),
+            })
+
+        if keys_pressed[pygame.K_RIGHT] or keys_pressed[pygame.K_d]:
+            self.sv_pac_next_dir = 0
+        elif keys_pressed[pygame.K_LEFT] or keys_pressed[pygame.K_a]:
+            self.sv_pac_next_dir = 1
+        elif keys_pressed[pygame.K_DOWN] or keys_pressed[pygame.K_s]:
+            self.sv_pac_next_dir = 2
+        elif keys_pressed[pygame.K_UP] or keys_pressed[pygame.K_w]:
+            self.sv_pac_next_dir = 3
+
+        self.sv_move_progress += 8.8 * dt
+        if self.sv_move_progress >= 1.0:
+            self.sv_move_progress = 0.0
+            self.sv_pac_col = self.sv_pac_next_col
+            self.sv_pac_row = self.sv_pac_next_row
+            self.sv_pac_x = self.sv_pac_col * TILE
+            self.sv_pac_y = self.sv_pac_row * TILE
+            if self.sv_power_pellet and (self.sv_pac_col, self.sv_pac_row) == self.sv_power_pellet:
+                self.sv_power_pellet = None
+                self.sv_power_mode = 5.0
+                self.sfx_channel.play(snd_power)
+                self.particles.emit_power_pellet(int(self.sv_pac_x) + TILE // 2, int(self.sv_pac_y) + TILE // 2 + 40)
+                self.popups.add(int(self.sv_pac_x) + TILE // 2, int(self.sv_pac_y) + 20, "SCARED!", CYAN, self.font_popup)
+                self.shake.start(3, 0.2)
+
+            ok, nc, nr = self._bb_can_move(self.sv_maze, self.sv_pac_col, self.sv_pac_row, self.sv_pac_next_dir)
+            if ok:
+                self.sv_pac_dir = self.sv_pac_next_dir
+                self.sv_pac_next_col = nc
+                self.sv_pac_next_row = nr
+            else:
+                ok, nc, nr = self._bb_can_move(self.sv_maze, self.sv_pac_col, self.sv_pac_row, self.sv_pac_dir)
+                if ok:
+                    self.sv_pac_next_col = nc
+                    self.sv_pac_next_row = nr
+                else:
+                    self.sv_pac_next_col = self.sv_pac_col
+                    self.sv_pac_next_row = self.sv_pac_row
+        else:
+            dcol = self.sv_pac_next_col - self.sv_pac_col
+            if abs(dcol) > 1:
+                self.sv_pac_x = self.sv_pac_next_col * TILE
+            else:
+                self.sv_pac_x = self.sv_pac_col * TILE + dcol * TILE * self.sv_move_progress
+            self.sv_pac_y = self.sv_pac_row * TILE + (self.sv_pac_next_row - self.sv_pac_row) * TILE * self.sv_move_progress
+
+        if self.frame % 3 == 0:
+            self.particles.emit_trail(self.sv_pac_x + TILE // 2, self.sv_pac_y + TILE // 2 + 40, pac_custom['colour'])
+
+        for ghost in self.sv_ghosts:
+            ghost['speed'] = min(9.5, ghost['speed'] + dt * 0.03)
+            ghost['move_progress'] += ghost['speed'] * dt * (0.75 if self.sv_power_mode > 0 else 1.0)
+            if ghost['move_progress'] >= 1.0:
+                ghost['move_progress'] = 0.0
+                ghost['col'] = ghost['next_col']
+                ghost['row'] = ghost['next_row']
+                ghost['x'] = ghost['col'] * TILE
+                ghost['y'] = ghost['row'] * TILE
+                direction, nc, nr = self._mode_random_dir(self.sv_maze, ghost['col'], ghost['row'], ghost['dir'])
+                ghost['dir'] = direction
+                ghost['next_col'] = nc
+                ghost['next_row'] = nr
+            else:
+                dcol = ghost['next_col'] - ghost['col']
+                if abs(dcol) > 1:
+                    ghost['x'] = ghost['next_col'] * TILE
+                else:
+                    ghost['x'] = ghost['col'] * TILE + dcol * TILE * ghost['move_progress']
+                ghost['y'] = ghost['row'] * TILE + (ghost['next_row'] - ghost['row']) * TILE * ghost['move_progress']
+
+            dist = math.sqrt((ghost['x'] - self.sv_pac_x) ** 2 + (ghost['y'] - self.sv_pac_y) ** 2)
+            if dist < TILE * 0.8:
+                if self.sv_power_mode > 0:
+                    gc, gr = self._mode_random_open_tile(self.sv_maze, edge_only=True)
+                    ghost['col'] = gc
+                    ghost['row'] = gr
+                    ghost['x'] = gc * TILE
+                    ghost['y'] = gr * TILE
+                    ghost['move_progress'] = 0.0
+                    direction, nc, nr = self._mode_random_dir(self.sv_maze, gc, gr, ghost['dir'])
+                    ghost['dir'] = direction
+                    ghost['next_col'] = nc
+                    ghost['next_row'] = nr
+                    self.sv_score += 500
+                    self.sv_ghosts_eaten += 1
+                    gx = int(ghost['x']) + TILE // 2
+                    gy = int(ghost['y']) + TILE // 2 + 40
+                    self.sfx_channel.play(snd_eat_ghost)
+                    self.particles.emit_ghost_eat(gx, gy, ghost['color'])
+                    self.popups.add(gx, gy, "+500", GOLD, self.font_popup)
+                    self.shake.start(4, 0.2)
+                elif self.sv_invincible <= 0:
+                    self.sv_lives -= 1
+                    self.sv_invincible = 2.0
+                    self.sv_pac_col = 14
+                    self.sv_pac_row = 15
+                    self.sv_pac_x = self.sv_pac_col * TILE
+                    self.sv_pac_y = self.sv_pac_row * TILE
+                    self.sv_pac_next_col = self.sv_pac_col
+                    self.sv_pac_next_row = self.sv_pac_row
+                    self.sv_move_progress = 0.0
+                    self.sv_ready = 1.0
+                    self.sfx_channel.play(snd_death)
+                    self.particles.emit_death(int(self.sv_pac_x) + TILE // 2, int(self.sv_pac_y) + TILE // 2 + 40)
+                    self.shake.start(8, 0.4)
+                    for push_ghost in self.sv_ghosts:
+                        gc, gr = self._mode_random_open_tile(self.sv_maze, edge_only=True)
+                        push_ghost['col'] = gc
+                        push_ghost['row'] = gr
+                        push_ghost['x'] = gc * TILE
+                        push_ghost['y'] = gr * TILE
+                        push_ghost['move_progress'] = 0.0
+                        direction, nc, nr = self._mode_random_dir(self.sv_maze, gc, gr, push_ghost['dir'])
+                        push_ghost['dir'] = direction
+                        push_ghost['next_col'] = nc
+                        push_ghost['next_row'] = nr
+                    if self.sv_lives <= 0:
+                        self.state = 'game_over'
+                        self.high_score = max(self.high_score, self.sv_score)
+                        self.music_channel.stop()
+                    return
+
+    def draw_survival(self):
+        screen.fill((8, 0, 0))
+        y_off = 40
+
+        title = self.font_sm.render(f"🛡️ SURVIVAL  SCORE: {self.sv_score}", True, YELLOW)
+        screen.blit(title, (10, 7))
+        timer_txt = self.font_big.render(f"{self.sv_time:05.1f}s", True, WHITE if self.sv_lives > 1 else RED)
+        screen.blit(timer_txt, (WIDTH // 2 - timer_txt.get_width() // 2, 2))
+        info_txt = self.font_sm.render(f"GHOSTS: {len(self.sv_ghosts)}/15  ♥ {self.sv_lives}", True, CYAN)
+        screen.blit(info_txt, (WIDTH - info_txt.get_width() - 10, 16))
+
+        for r in range(ROWS):
+            for c in range(COLS):
+                if self.sv_maze[r][c] == 1:
+                    x = c * TILE
+                    y = r * TILE + y_off
+                    pygame.draw.rect(screen, (120, 0, 0), (x + 1, y + 1, TILE - 2, TILE - 2), 2, border_radius=4)
+
+        if self.sv_power_pellet and self.frame % 20 < 15:
+            px = self.sv_power_pellet[0] * TILE + TILE // 2
+            py = self.sv_power_pellet[1] * TILE + TILE // 2 + y_off
+            pygame.gfxdraw.filled_circle(screen, px, py, 6, CYAN)
+            pygame.gfxdraw.aacircle(screen, px, py, 6, WHITE)
+
+        for ghost in self.sv_ghosts:
+            draw_ghost(screen, int(ghost['x']), int(ghost['y']) + y_off, ghost['color'],
+                       ghost['dir'], self.frame, self.sv_power_mode > 0)
+
+        if self.sv_invincible <= 0 or int(self.sv_invincible * 12) % 2 == 0:
+            draw_pacman(screen, int(self.sv_pac_x), int(self.sv_pac_y) + y_off, self.sv_pac_dir, self.frame)
+
+        if self.sv_ready > 0:
+            txt = self.font_big.render("SURVIVE!", True, YELLOW)
+            screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
+
+        hint = self.font_sm.render("Power pellet every 15 seconds  •  +500 for scared ghosts", True, GREY)
+        screen.blit(hint, (WIDTH // 2 - hint.get_width() // 2, HEIGHT - 30))
+
+    # ─── INVISIBLE MAZE MODE ─────────────────────────────────────────────
+    def _iv_reveal_walls(self, hit_col, hit_row):
+        for r in range(max(0, hit_row - 3), min(ROWS, hit_row + 4)):
+            for c in range(max(0, hit_col - 3), min(COLS, hit_col + 4)):
+                if (c - hit_col) ** 2 + (r - hit_row) ** 2 <= 10 and self.iv_maze[r][c] in (1, 5):
+                    self.iv_reveals[(c, r)] = 1.5
+                    if self.iv_maze[r][c] == 1:
+                        self.iv_seen_walls.add((c, r))
+
+    def reset_invisible(self):
+        self.iv_maze = parse_maze(MAZE_TEMPLATE)
+        self.iv_pac_col = 13
+        self.iv_pac_row = 23
+        self.iv_pac_x = self.iv_pac_col * TILE
+        self.iv_pac_y = self.iv_pac_row * TILE
+        self.iv_pac_dir = 0
+        self.iv_pac_next_dir = 0
+        self.iv_move_progress = 0.0
+        self.iv_pac_next_col = self.iv_pac_col
+        self.iv_pac_next_row = self.iv_pac_row
+        self.iv_score = 0
+        self.iv_lives = 3
+        self.iv_ready = 2.0
+        self.iv_invincible = 0.0
+        self.iv_combo = 0
+        self.iv_dots_total = sum(row.count(2) + row.count(3) for row in self.iv_maze)
+        self.iv_dots_eaten = 0
+        self.iv_reveals = {}
+        self.iv_seen_walls = set()
+        self.iv_wall_total = sum(row.count(1) for row in self.iv_maze)
+        self.iv_won = False
+        self.iv_end_timer = 0.0
+        self.iv_ghosts = []
+        ghost_specs = [
+            (13, 11, RED),
+            (13, 14, PINK),
+            (11, 14, CYAN),
+            (15, 14, ORANGE),
+        ]
+        for i, (gc, gr, color) in enumerate(ghost_specs):
+            direction, nc, nr = self._mode_random_dir(self.iv_maze, gc, gr, random.randint(0, 3))
+            self.iv_ghosts.append({
+                'home_col': gc, 'home_row': gr,
+                'col': gc, 'row': gr, 'x': gc * TILE, 'y': gr * TILE,
+                'dir': direction, 'next_col': nc, 'next_row': nr,
+                'move_progress': 0.0, 'speed': 5.6 + i * 0.25,
+                'color': color, 'scared_timer': 0.0,
+            })
+
+    def update_invisible(self, dt, keys_pressed):
+        if self.iv_end_timer > 0:
+            self.iv_end_timer -= dt
+            if self.iv_end_timer <= 0:
+                self.state = 'game_over'
+                self.high_score = max(self.high_score, self.iv_score)
+            return
+
+        if self.iv_ready > 0:
+            self.iv_ready -= dt
+            return
+
+        if not self.music_channel.get_busy():
+            self.music_channel.play(music_ghost_tag, loops=-1)
+
+        if self.iv_invincible > 0:
+            self.iv_invincible -= dt
+
+        for key in list(self.iv_reveals.keys()):
+            self.iv_reveals[key] -= dt
+            if self.iv_reveals[key] <= 0:
+                del self.iv_reveals[key]
+
+        if keys_pressed[pygame.K_RIGHT] or keys_pressed[pygame.K_d]:
+            self.iv_pac_next_dir = 0
+        elif keys_pressed[pygame.K_LEFT] or keys_pressed[pygame.K_a]:
+            self.iv_pac_next_dir = 1
+        elif keys_pressed[pygame.K_DOWN] or keys_pressed[pygame.K_s]:
+            self.iv_pac_next_dir = 2
+        elif keys_pressed[pygame.K_UP] or keys_pressed[pygame.K_w]:
+            self.iv_pac_next_dir = 3
+
+        self.iv_move_progress += 8.0 * dt
+        if self.iv_move_progress >= 1.0:
+            self.iv_move_progress = 0.0
+            self.iv_pac_col = self.iv_pac_next_col
+            self.iv_pac_row = self.iv_pac_next_row
+            self.iv_pac_x = self.iv_pac_col * TILE
+            self.iv_pac_y = self.iv_pac_row * TILE
+
+            tile = self.iv_maze[self.iv_pac_row][self.iv_pac_col]
+            px = self.iv_pac_col * TILE + TILE // 2
+            py = self.iv_pac_row * TILE + TILE // 2 + 40
+            if tile == 2:
+                self.iv_maze[self.iv_pac_row][self.iv_pac_col] = 0
+                self.iv_dots_eaten += 1
+                self.iv_score += 10
+                self.sfx_channel.play(snd_chomp)
+                self.particles.emit_dot_eat(px, py, PURPLE)
+            elif tile == 3:
+                self.iv_maze[self.iv_pac_row][self.iv_pac_col] = 0
+                self.iv_dots_eaten += 1
+                self.iv_score += 50
+                self.iv_combo = 0
+                self.sfx_channel.play(snd_power)
+                self.particles.emit_power_pellet(px, py)
+                self.shake.start(3, 0.2)
+                for ghost in self.iv_ghosts:
+                    ghost['scared_timer'] = 5.0
+
+            if self.iv_dots_eaten >= self.iv_dots_total:
+                self.iv_won = True
+                self.iv_end_timer = 2.8
+                self.sfx_channel.play(snd_win)
+                self.particles.emit_level_clear()
+                self.music_channel.stop()
+                return
+
+            ok, nc, nr = self._bb_can_move(self.iv_maze, self.iv_pac_col, self.iv_pac_row, self.iv_pac_next_dir)
+            if ok:
+                self.iv_pac_dir = self.iv_pac_next_dir
+                self.iv_pac_next_col = nc
+                self.iv_pac_next_row = nr
+            else:
+                dc = {0: 1, 1: -1, 2: 0, 3: 0}
+                dr = {0: 0, 1: 0, 2: 1, 3: -1}
+                hit_col = self.iv_pac_col + dc[self.iv_pac_next_dir]
+                hit_row = self.iv_pac_row + dr[self.iv_pac_next_dir]
+                if hit_col < 0:
+                    hit_col = COLS - 1
+                if hit_col >= COLS:
+                    hit_col = 0
+                if 0 <= hit_row < ROWS and self.iv_maze[hit_row][hit_col] in (1, 4, 5):
+                    self._iv_reveal_walls(hit_col, hit_row)
+                ok, nc, nr = self._bb_can_move(self.iv_maze, self.iv_pac_col, self.iv_pac_row, self.iv_pac_dir)
+                if ok:
+                    self.iv_pac_next_col = nc
+                    self.iv_pac_next_row = nr
+                else:
+                    hit_col = self.iv_pac_col + dc[self.iv_pac_dir]
+                    hit_row = self.iv_pac_row + dr[self.iv_pac_dir]
+                    if hit_col < 0:
+                        hit_col = COLS - 1
+                    if hit_col >= COLS:
+                        hit_col = 0
+                    if 0 <= hit_row < ROWS and self.iv_maze[hit_row][hit_col] in (1, 4, 5):
+                        self._iv_reveal_walls(hit_col, hit_row)
+                    self.iv_pac_next_col = self.iv_pac_col
+                    self.iv_pac_next_row = self.iv_pac_row
+        else:
+            dcol = self.iv_pac_next_col - self.iv_pac_col
+            if abs(dcol) > 1:
+                self.iv_pac_x = self.iv_pac_next_col * TILE
+            else:
+                self.iv_pac_x = self.iv_pac_col * TILE + dcol * TILE * self.iv_move_progress
+            self.iv_pac_y = self.iv_pac_row * TILE + (self.iv_pac_next_row - self.iv_pac_row) * TILE * self.iv_move_progress
+
+        if self.frame % 3 == 0:
+            self.particles.emit_trail(self.iv_pac_x + TILE // 2, self.iv_pac_y + TILE // 2 + 40, PURPLE)
+
+        for ghost in self.iv_ghosts:
+            if ghost['scared_timer'] > 0:
+                ghost['scared_timer'] = max(0.0, ghost['scared_timer'] - dt)
+            ghost['move_progress'] += ghost['speed'] * dt * (0.8 if ghost['scared_timer'] > 0 else 1.0)
+            if ghost['move_progress'] >= 1.0:
+                ghost['move_progress'] = 0.0
+                ghost['col'] = ghost['next_col']
+                ghost['row'] = ghost['next_row']
+                ghost['x'] = ghost['col'] * TILE
+                ghost['y'] = ghost['row'] * TILE
+                direction, nc, nr = self._mode_random_dir(self.iv_maze, ghost['col'], ghost['row'], ghost['dir'])
+                ghost['dir'] = direction
+                ghost['next_col'] = nc
+                ghost['next_row'] = nr
+            else:
+                dcol = ghost['next_col'] - ghost['col']
+                if abs(dcol) > 1:
+                    ghost['x'] = ghost['next_col'] * TILE
+                else:
+                    ghost['x'] = ghost['col'] * TILE + dcol * TILE * ghost['move_progress']
+                ghost['y'] = ghost['row'] * TILE + (ghost['next_row'] - ghost['row']) * TILE * ghost['move_progress']
+
+            dist = math.sqrt((ghost['x'] - self.iv_pac_x) ** 2 + (ghost['y'] - self.iv_pac_y) ** 2)
+            if dist < TILE * 0.8:
+                if ghost['scared_timer'] > 0:
+                    self.iv_combo += 1
+                    pts = 200 * self.iv_combo
+                    self.iv_score += pts
+                    ghost['col'] = ghost['home_col']
+                    ghost['row'] = ghost['home_row']
+                    ghost['x'] = ghost['col'] * TILE
+                    ghost['y'] = ghost['row'] * TILE
+                    ghost['move_progress'] = 0.0
+                    ghost['scared_timer'] = 0.0
+                    direction, nc, nr = self._mode_random_dir(self.iv_maze, ghost['col'], ghost['row'], ghost['dir'])
+                    ghost['dir'] = direction
+                    ghost['next_col'] = nc
+                    ghost['next_row'] = nr
+                    gx = int(ghost['x']) + TILE // 2
+                    gy = int(ghost['y']) + TILE // 2 + 40
+                    self.sfx_channel.play(snd_eat_ghost)
+                    self.particles.emit_ghost_eat(gx, gy, ghost['color'])
+                    self.popups.add(gx, gy, f"+{pts}", CYAN, self.font_popup)
+                    self.shake.start(4, 0.2)
+                elif self.iv_invincible <= 0:
+                    self.iv_lives -= 1
+                    self.iv_combo = 0
+                    self.iv_invincible = 2.0
+                    self.iv_ready = 1.0
+                    self.iv_pac_col = 13
+                    self.iv_pac_row = 23
+                    self.iv_pac_x = self.iv_pac_col * TILE
+                    self.iv_pac_y = self.iv_pac_row * TILE
+                    self.iv_pac_next_col = self.iv_pac_col
+                    self.iv_pac_next_row = self.iv_pac_row
+                    self.iv_move_progress = 0.0
+                    self.sfx_channel.play(snd_death)
+                    self.particles.emit_death(int(self.iv_pac_x) + TILE // 2, int(self.iv_pac_y) + TILE // 2 + 40)
+                    self.shake.start(8, 0.4)
+                    for reset_ghost in self.iv_ghosts:
+                        reset_ghost['col'] = reset_ghost['home_col']
+                        reset_ghost['row'] = reset_ghost['home_row']
+                        reset_ghost['x'] = reset_ghost['col'] * TILE
+                        reset_ghost['y'] = reset_ghost['row'] * TILE
+                        reset_ghost['move_progress'] = 0.0
+                        reset_ghost['scared_timer'] = 0.0
+                        direction, nc, nr = self._mode_random_dir(self.iv_maze, reset_ghost['col'], reset_ghost['row'], reset_ghost['dir'])
+                        reset_ghost['dir'] = direction
+                        reset_ghost['next_col'] = nc
+                        reset_ghost['next_row'] = nr
+                    if self.iv_lives <= 0:
+                        self.state = 'game_over'
+                        self.high_score = max(self.high_score, self.iv_score)
+                        self.music_channel.stop()
+                    return
+
+    def draw_invisible(self):
+        screen.fill((6, 0, 14))
+        y_off = 40
+
+        title = self.font_sm.render(f"🌫️ INVISIBLE MAZE  SCORE: {self.iv_score}", True, YELLOW)
+        screen.blit(title, (10, 7))
+        reveal_pct = int(len(self.iv_seen_walls) * 100 / max(1, self.iv_wall_total))
+        info = self.font_sm.render(f"WALLS FOUND: {reveal_pct}%  •  DOTS: {self.iv_dots_eaten}/{self.iv_dots_total}", True, CYAN)
+        screen.blit(info, (WIDTH // 2 - info.get_width() // 2, 28))
+        lives = self.font_sm.render(f"♥ x{self.iv_lives}", True, WHITE if self.iv_lives > 1 else RED)
+        screen.blit(lives, (WIDTH - lives.get_width() - 10, 16))
+
+        for r in range(ROWS):
+            for c in range(COLS):
+                tile = self.iv_maze[r][c]
+                x = c * TILE
+                y = r * TILE + y_off
+                cx = x + TILE // 2
+                cy = y + TILE // 2
+                if tile == 2:
+                    pygame.gfxdraw.filled_circle(screen, cx, cy, 2, WHITE)
+                    pygame.gfxdraw.aacircle(screen, cx, cy, 2, WHITE)
+                elif tile == 3 and self.frame % 20 < 15:
+                    pygame.gfxdraw.filled_circle(screen, cx, cy, 5, GOLD)
+                    pygame.gfxdraw.aacircle(screen, cx, cy, 5, WHITE)
+
+                reveal = self.iv_reveals.get((c, r), 0.0)
+                if tile in (1, 5) and reveal > 0:
+                    alpha = max(30, int(220 * (reveal / 1.5)))
+                    tile_surf = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+                    pygame.draw.rect(tile_surf, (70, 0, 100, alpha // 3), (2, 2, TILE - 4, TILE - 4), border_radius=3)
+                    pygame.draw.rect(tile_surf, (180, 80, 255, alpha), (1, 1, TILE - 2, TILE - 2), 2, border_radius=4)
+                    screen.blit(tile_surf, (x, y))
+
+        for ghost in self.iv_ghosts:
+            draw_ghost(screen, int(ghost['x']), int(ghost['y']) + y_off, ghost['color'],
+                       ghost['dir'], self.frame, ghost['scared_timer'] > 0)
+
+        if self.iv_invincible <= 0 or int(self.iv_invincible * 12) % 2 == 0:
+            draw_pacman(screen, int(self.iv_pac_x), int(self.iv_pac_y) + y_off, self.iv_pac_dir, self.frame)
+
+        if self.iv_ready > 0:
+            txt = self.font_big.render("LISTEN TO THE WALLS...", True, PURPLE)
+            screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
+        elif self.iv_end_timer > 0:
+            txt = self.font_big.render("MAZE MASTER!", True, GREEN)
+            screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
+
     # ─── MENU ────────────────────────────────────────────────────────────
     def draw_menu(self):
         screen.fill(BLACK)
@@ -2855,6 +3576,9 @@ class PacManGame:
             ("👻  GHOST TAG", "ghost_tag"),
             ("⚡  PELLET FRENZY", "pellet_frenzy"),
             ("⚔️  BOSS BATTLE", "boss_battle"),
+            ("🏁  MAZE RUNNER", "maze_runner"),
+            ("🛡️  SURVIVAL", "survival"),
+            ("🌫️  INVISIBLE MAZE", "invisible"),
             ("🗺️  CHOOSE LEVEL", "level_select"),
             ("🎨  CUSTOMISE PAC-MAN", "customise"),
         ]
@@ -2874,7 +3598,8 @@ class PacManGame:
         # High score
         if self.high_score > 0:
             hs = self.font_sm.render(f"HIGH SCORE: {self.high_score}", True, YELLOW)
-            screen.blit(hs, (WIDTH // 2 - hs.get_width() // 2, 475))
+            hs_y = 240 + len(options) * 36 + 16
+            screen.blit(hs, (WIDTH // 2 - hs.get_width() // 2, hs_y))
 
         # Controls
         ctrl = self.font_xs.render("Arrow Keys / WASD to move  •  ENTER to select  •  ESC for menu",
@@ -3069,17 +3794,44 @@ class PacManGame:
                 board_y += 38
         else:
             # Minigame score display
+            detail_text = None
             if self.last_mode == 'ghost_tag':
                 mode_name = "GHOST TAG"
                 sc = self.gt_score
                 won = getattr(self, 'gt_won', False)
                 result_text = "ALL CAUGHT!" if won else "TIME'S UP!"
                 result_color = GREEN if won else RED
-            else:
+            elif self.last_mode == 'pellet_frenzy':
                 mode_name = "PELLET FRENZY"
                 sc = self.pf_score
                 result_text = "BUSTED!"
                 result_color = RED
+            elif self.last_mode == 'boss_battle':
+                mode_name = "BOSS BATTLE"
+                sc = self.bb_score
+                result_text = "THE BOSS WON!"
+                result_color = RED
+            elif self.last_mode == 'maze_runner':
+                mode_name = "MAZE RUNNER"
+                sc = self.mr_final_score
+                won = getattr(self, 'mr_won', False)
+                result_text = f"CLEARED IN {self.mr_completion_time:.1f}s!" if won else "TIME'S UP!"
+                result_color = GREEN if won else RED
+                detail_text = f"Bonus: +{self.mr_bonus_points}" if won else f"Dots grabbed: {self.mr_dots_eaten}/{self.mr_dots_total}"
+            elif self.last_mode == 'survival':
+                mode_name = "SURVIVAL"
+                sc = self.sv_score
+                result_text = f"SURVIVED {self.sv_time:.1f}s"
+                result_color = YELLOW
+                detail_text = f"Ghosts tagged: {self.sv_ghosts_eaten}"
+            else:
+                mode_name = "INVISIBLE MAZE"
+                sc = self.iv_score
+                won = getattr(self, 'iv_won', False)
+                result_text = "MAZE MASTER!" if won else "LOST IN THE DARK!"
+                result_color = GREEN if won else RED
+                reveal_pct = int(len(self.iv_seen_walls) * 100 / max(1, self.iv_wall_total))
+                detail_text = f"Walls found: {reveal_pct}%"
             mode_txt = self.font_med.render(mode_name, True, CYAN)
             screen.blit(mode_txt, (WIDTH // 2 - mode_txt.get_width() // 2, 140))
             res_txt = self.font_big.render(result_text, True, result_color)
@@ -3088,6 +3840,9 @@ class PacManGame:
             screen.blit(score_txt, (WIDTH // 2 - score_txt.get_width() // 2, 240))
             pts = self.font_sm.render("points", True, GREY)
             screen.blit(pts, (WIDTH // 2 - pts.get_width() // 2, 300))
+            if detail_text:
+                detail = self.font_sm.render(detail_text, True, GREY)
+                screen.blit(detail, (WIDTH // 2 - detail.get_width() // 2, 330))
 
         if self.high_score > 0:
             hs = self.font_sm.render(f"Personal Best: {self.high_score}", True, GREY)
@@ -3110,7 +3865,7 @@ class PacManGame:
 
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
-                        if self.state in ['classic', 'ghost_tag', 'pellet_frenzy', 'boss_battle']:
+                        if self.state in ['classic', 'ghost_tag', 'pellet_frenzy', 'boss_battle', 'maze_runner', 'survival', 'invisible']:
                             if self.state == 'classic' and not self.paused:
                                 self.paused = True
                             elif self.state == 'classic' and self.paused:
@@ -3126,13 +3881,13 @@ class PacManGame:
 
                     if self.state == 'menu':
                         if event.key == pygame.K_UP or event.key == pygame.K_w:
-                            self.menu_sel = (self.menu_sel - 1) % 6
+                            self.menu_sel = (self.menu_sel - 1) % 9
                             self.sfx_channel.play(snd_menu)
                         elif event.key == pygame.K_DOWN or event.key == pygame.K_s:
-                            self.menu_sel = (self.menu_sel + 1) % 6
+                            self.menu_sel = (self.menu_sel + 1) % 9
                             self.sfx_channel.play(snd_menu)
                         elif event.key == pygame.K_RETURN:
-                            modes = ['classic', 'ghost_tag', 'pellet_frenzy', 'boss_battle', 'level_select', 'customise']
+                            modes = ['classic', 'ghost_tag', 'pellet_frenzy', 'boss_battle', 'maze_runner', 'survival', 'invisible', 'level_select', 'customise']
                             self.state = modes[self.menu_sel]
                             if self.state in ('customise', 'level_select'):
                                 self.sfx_channel.play(snd_menu)
@@ -3148,6 +3903,12 @@ class PacManGame:
                                     self.reset_pellet_frenzy()
                                 elif self.state == 'boss_battle':
                                     self.reset_boss_battle()
+                                elif self.state == 'maze_runner':
+                                    self.reset_maze_runner()
+                                elif self.state == 'survival':
+                                    self.reset_survival()
+                                elif self.state == 'invisible':
+                                    self.reset_invisible()
                                 self.sfx_channel.play(snd_win)
 
                     elif self.state == 'customise':
@@ -3235,6 +3996,12 @@ class PacManGame:
                 self.update_pellet_frenzy(dt, keys)
             elif self.state == 'boss_battle':
                 self.update_boss_battle(dt, keys)
+            elif self.state == 'maze_runner':
+                self.update_maze_runner(dt, keys)
+            elif self.state == 'survival':
+                self.update_survival(dt, keys)
+            elif self.state == 'invisible':
+                self.update_invisible(dt, keys)
 
             # Update visual effects (always, even during transitions)
             self.particles.update(dt)
@@ -3258,6 +4025,12 @@ class PacManGame:
                 self.draw_pellet_frenzy()
             elif self.state == 'boss_battle':
                 self.draw_boss_battle()
+            elif self.state == 'maze_runner':
+                self.draw_maze_runner()
+            elif self.state == 'survival':
+                self.draw_survival()
+            elif self.state == 'invisible':
+                self.draw_invisible()
             elif self.state == 'game_over':
                 self.draw_game_over()
 
@@ -3283,4 +4056,3 @@ if __name__ == '__main__':
     print("Loading...")
     game = PacManGame()
     game.run()
-
