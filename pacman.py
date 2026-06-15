@@ -625,6 +625,41 @@ MAZE_LEVEL5 = [
 
 ALL_MAZES = [MAZE_TEMPLATE, MAZE_LEVEL2, MAZE_LEVEL3, MAZE_LEVEL4, MAZE_LEVEL5]
 
+# ─── BOSS BATTLE ARENA (wide open, no obstacles) ───────────────────────────
+BOSS_ARENA = [
+    "1111111111111111111111111111",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "0000000000000000000000000000",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1000000000000000000000000001",
+    "1111111111111111111111111111",
+]
+
 # ─── LEVEL COLOUR THEMES ────────────────────────────────────────────────────
 LEVEL_THEMES = [
     {   # Level 1: Classic Blue
@@ -2213,17 +2248,19 @@ class PacManGame:
             screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 30))
 
     # ─── BOSS BATTLE MODE ────────────────────────────────────────────────
-    def reset_boss_battle(self):
-        self.bb_maze = parse_maze(MAZE_TEMPLATE)
-        # Remove dots — boss arena
-        for r in range(ROWS):
-            for c in range(COLS):
-                if self.bb_maze[r][c] in [2, 3]:
-                    self.bb_maze[r][c] = 0
-        self.bb_score = 0
-        # Player
+    def reset_boss_battle(self, level=1, keep_score=False):
+        self.bb_maze = parse_maze(BOSS_ARENA)
+        self.bb_level = level
+        if not keep_score:
+            self.bb_score = 0
+            self.bb_lives = 3
+        # Scale difficulty with level
+        base_hp = 20 + level * 10          # 30, 40, 50, …
+        self.bb_boss_max_hp = base_hp
+        self.bb_boss_hp = base_hp
+        # Player — centre-bottom of open arena
         self.bb_pac_col = 14
-        self.bb_pac_row = 23
+        self.bb_pac_row = 25
         self.bb_pac_x = self.bb_pac_col * TILE
         self.bb_pac_y = self.bb_pac_row * TILE
         self.bb_pac_dir = 3
@@ -2231,14 +2268,13 @@ class PacManGame:
         self.bb_move_progress = 0
         self.bb_pac_next_col = self.bb_pac_col
         self.bb_pac_next_row = self.bb_pac_row
-        self.bb_lives = 3
         self.bb_invincible = 0
         self.bb_shoot_cooldown = 0
         # Projectiles (pellets shot by player and allies)
         self.bb_pellets = []
         # Ally Pac-Men
         self.bb_allies = []
-        ally_spawns = [(6, 23), (20, 23), (14, 29)]
+        ally_spawns = [(4, 25), (22, 25), (14, 29)]
         ally_names = ['CHOMPY', 'ZIPPY', 'SPARKY']
         ally_colours = [CYAN, ORANGE, PINK]
         for i, (sc, sr) in enumerate(ally_spawns):
@@ -2250,23 +2286,21 @@ class PacManGame:
                 'alive': True, 'shoot_timer': random.uniform(0.5, 1.5),
                 'respawn_timer': 0,
             })
-        # Boss Ghost — big and mean
+        # Boss Ghost — big and mean, spawns at top-centre
         self.bb_boss_col = 13
-        self.bb_boss_row = 5
+        self.bb_boss_row = 4
         self.bb_boss_x = self.bb_boss_col * TILE
         self.bb_boss_y = self.bb_boss_row * TILE
         self.bb_boss_dir = 0
         self.bb_boss_next_col = self.bb_boss_col
         self.bb_boss_next_row = self.bb_boss_row
         self.bb_boss_move_progress = 0
-        self.bb_boss_hp = 30
-        self.bb_boss_max_hp = 30
         self.bb_boss_phase = 1  # gets harder at lower HP
         self.bb_boss_flash = 0
         self.bb_boss_charge_timer = 0
         self.bb_boss_charging = False
         self.bb_boss_charge_dir = 0
-        self.bb_boss_spawn_timer = 5.0
+        self.bb_boss_spawn_timer = max(2.0, 5.0 - level * 0.5)  # spawns minions faster each level
         # Mini-ghosts spawned by boss
         self.bb_minions = []
         self.bb_ready = 2.5
@@ -2288,8 +2322,13 @@ class PacManGame:
         if self.bb_won:
             self.bb_win_timer -= dt
             if self.bb_win_timer <= 0:
-                self.state = 'game_over'
-                self.high_score = max(self.high_score, self.bb_score)
+                # Progress to next boss level!
+                next_lvl = self.bb_level + 1
+                saved_score = self.bb_score
+                saved_lives = self.bb_lives
+                self.reset_boss_battle(level=next_lvl, keep_score=True)
+                self.bb_score = saved_score
+                self.bb_lives = saved_lives
             return
 
         if self.bb_ready > 0:
@@ -2464,20 +2503,20 @@ class PacManGame:
                 if self.bb_boss_hp <= 0:
                     self.bb_won = True
                     self.bb_win_timer = 3.0
-                    self.bb_score += 5000
+                    self.bb_score += 5000 * self.bb_level
                     self.particles.emit_level_clear()
                     self.shake.start(10, 1.0)
                     self.sfx_channel.play(snd_win)
                     self.music_channel.stop()
                     return
-                elif self.bb_boss_hp <= 10 and self.bb_boss_phase == 2:
+                elif self.bb_boss_hp <= self.bb_boss_max_hp // 3 and self.bb_boss_phase == 2:
                     self.bb_boss_phase = 3
-                elif self.bb_boss_hp <= 20 and self.bb_boss_phase == 1:
+                elif self.bb_boss_hp <= self.bb_boss_max_hp * 2 // 3 and self.bb_boss_phase == 1:
                     self.bb_boss_phase = 2
 
         # ── Boss AI ──
         self.bb_boss_flash = max(0, self.bb_boss_flash - dt)
-        boss_speed = 3.0 + self.bb_boss_phase * 1.5
+        boss_speed = 3.0 + self.bb_boss_phase * 1.5 + (self.bb_level - 1) * 0.5
 
         # Boss charges toward player sometimes
         self.bb_boss_charge_timer -= dt
@@ -2540,8 +2579,8 @@ class PacManGame:
         # Boss spawns minions
         self.bb_boss_spawn_timer -= dt
         if self.bb_boss_spawn_timer <= 0:
-            self.bb_boss_spawn_timer = max(2.0, 6.0 - self.bb_boss_phase * 1.5)
-            if len(self.bb_minions) < 3 + self.bb_boss_phase:
+            self.bb_boss_spawn_timer = max(1.5, 6.0 - self.bb_boss_phase * 1.5 - self.bb_level * 0.3)
+            if len(self.bb_minions) < 3 + self.bb_boss_phase + self.bb_level - 1:
                 self.bb_minions.append({
                     'col': self.bb_boss_col, 'row': self.bb_boss_row,
                     'x': self.bb_boss_x, 'y': self.bb_boss_y,
@@ -2553,7 +2592,7 @@ class PacManGame:
 
         # ── Update minions ──
         for m in self.bb_minions[:]:
-            m['move_progress'] += 6.0 * dt
+            m['move_progress'] += (6.0 + (self.bb_level - 1) * 0.5) * dt
             if m['move_progress'] >= 1.0:
                 m['move_progress'] = 0
                 m['col'] = m['next_col']
@@ -2652,14 +2691,16 @@ class PacManGame:
                     break
 
     def _draw_boss_ghost(self, surface, x, y, frame, flash):
-        """Draw a big 2x2 tile boss ghost."""
+        """Draw a big 2x2 tile boss ghost — colour shifts with level."""
         size = TILE * 2
         cx, cy = x + size // 2, y + size // 2
         r = size // 2 - 2
+        boss_body_colours = [(200, 0, 0), (180, 0, 180), (0, 160, 0), (200, 120, 0), (100, 0, 200)]
+        base_col = boss_body_colours[(self.bb_level - 1) % len(boss_body_colours)]
         if flash > 0 and int(flash * 20) % 2 == 0:
             body_color = WHITE
         else:
-            body_color = (200, 0, 0)
+            body_color = base_col
 
         # Body
         pygame.gfxdraw.filled_circle(surface, cx, cy - 4, r, body_color)
@@ -2710,25 +2751,22 @@ class PacManGame:
             hp_col = GREEN if hp_frac > 0.5 else YELLOW if hp_frac > 0.25 else RED
             pygame.draw.rect(screen, hp_col, (bar_x, bar_y, int(bar_w * hp_frac), bar_h), border_radius=4)
         pygame.draw.rect(screen, WHITE, (bar_x, bar_y, bar_w, bar_h), 1, border_radius=4)
-        hp_text = self.font_xs.render(f"BOSS HP: {max(0, self.bb_boss_hp)}/{self.bb_boss_max_hp}  Phase {self.bb_boss_phase}", True, WHITE)
+        hp_text = self.font_xs.render(f"BOSS LV.{self.bb_level}  HP: {max(0, self.bb_boss_hp)}/{self.bb_boss_max_hp}  Phase {self.bb_boss_phase}", True, WHITE)
         screen.blit(hp_text, (WIDTH // 2 - hp_text.get_width() // 2, bar_y - 14))
 
         # Lives
         lives_txt = self.font_sm.render(f"♥ x{self.bb_lives}", True, RED if self.bb_lives == 1 else YELLOW)
         screen.blit(lives_txt, (WIDTH - lives_txt.get_width() - 10, 5))
 
-        # Maze (walls only)
-        theme = LEVEL_THEMES[0]
+        # Maze (walls only) — colour shifts with boss level
+        boss_wall_colours = [(33, 33, 222), (200, 0, 0), (0, 200, 80), (200, 0, 200), (255, 160, 0)]
+        wall_col = boss_wall_colours[(self.bb_level - 1) % len(boss_wall_colours)]
         for r in range(ROWS):
             for c in range(COLS):
                 if self.bb_maze[r][c] == 1:
                     x = c * TILE
                     y = r * TILE + y_off
-                    pygame.draw.rect(screen, theme['wall'], (x + 1, y + 1, TILE - 2, TILE - 2), 2, border_radius=4)
-                elif self.bb_maze[r][c] == 5:
-                    x = c * TILE
-                    y = r * TILE + y_off
-                    pygame.draw.rect(screen, theme['gate'], (x, y + TILE // 2 - 1, TILE, 3))
+                    pygame.draw.rect(screen, wall_col, (x + 1, y + 1, TILE - 2, TILE - 2), 2, border_radius=4)
 
         # Draw pellets in flight
         for p in self.bb_pellets:
@@ -2773,16 +2811,18 @@ class PacManGame:
 
         # Ready text
         if self.bb_ready > 0:
-            txt = self.font_big.render("FIGHT!", True, RED)
-            screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 50))
-            hint = self.font_sm.render("Aim with MOUSE, SPACE to shoot!", True, YELLOW)
-            screen.blit(hint, (WIDTH // 2 - hint.get_width() // 2, HEIGHT // 2 + 10))
+            lvl_txt = self.font_big.render(f"BOSS LEVEL {self.bb_level}!", True, RED)
+            screen.blit(lvl_txt, (WIDTH // 2 - lvl_txt.get_width() // 2, HEIGHT // 2 - 70))
+            txt = self.font_med.render("FIGHT!", True, YELLOW)
+            screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 20))
+            hint = self.font_sm.render("Aim with MOUSE, SPACE to shoot!", True, WHITE)
+            screen.blit(hint, (WIDTH // 2 - hint.get_width() // 2, HEIGHT // 2 + 20))
 
         # Win text
         if self.bb_won:
             txt = self.font_big.render("BOSS DEFEATED!", True, GOLD)
             screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
-            bonus = self.font_med.render(f"+5000 BONUS!", True, YELLOW)
+            bonus = self.font_med.render(f"+{5000 * self.bb_level} BONUS!  Next: Level {self.bb_level + 1}", True, YELLOW)
             screen.blit(bonus, (WIDTH // 2 - bonus.get_width() // 2, HEIGHT // 2 + 20))
 
     # ─── MENU ────────────────────────────────────────────────────────────
