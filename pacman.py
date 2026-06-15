@@ -458,7 +458,7 @@ MAZE_TEMPLATE = [
     "1222222222222222222222222221",
     "1211112112111111211211112121",
     "1211112112111111211211112121",
-    "1222222112222112222112222221",
+    "1222222112222112222102222221",
     "1111112111110110111121111121",
     "0000012111110110111121000000",
     "0000012110000000011212000000",
@@ -466,7 +466,7 @@ MAZE_TEMPLATE = [
     "1111112110140041011211111111",
     "0000002000140041000200000000",
     "1111112110140041011211111111",
-    "0000012110144441011212000000",
+    "0000012110144441011202000000",
     "0000012110000000011212000000",
     "0000012110111111011212000000",
     "1111112110111111011211111111",
@@ -507,8 +507,8 @@ MAZE_LEVEL2 = [
     "1111112212111111122111111111",
     "1222222222222222222222222221",
     "1211222111200002111222111121",
-    "1212222111202202111222121121",
-    "1312002222202202222200213121",
+    "1212222111202202111220121121",
+    "1312002222202202222200203121",
     "1212002112202202211200121121",
     "1212222112200002211222121121",
     "1212222112222222211222121121",
@@ -537,7 +537,7 @@ MAZE_LEVEL3 = [
     "0000002000140041000200000000",
     "1111112210140041012111111111",
     "0000012210144441012120000000",
-    "0000012210000000012120000000",
+    "0000012210000000012020000000",
     "0000012212111111212120000000",
     "1111112212111111212111111111",
     "1222222222222222222222222221",
@@ -558,7 +558,7 @@ MAZE_LEVEL4 = [
     "1111111111111111111111111111",
     "1222222222222222222222222221",
     "1211111211111111112111111121",
-    "1312222211222222112222213121",
+    "1312222211222222112222203121",
     "1211222211211112112222111121",
     "1222211111211112111112222221",
     "1222211111200002111112222221",
@@ -576,7 +576,7 @@ MAZE_LEVEL4 = [
     "0000222112111111211222000000",
     "1111222112111111211222111111",
     "1222222222222222222222222221",
-    "1312111121222222121111213121",
+    "1312111121222222121111203121",
     "1212111121222222121111121121",
     "1212222222200002222222121121",
     "1212222121211112121222121121",
@@ -683,35 +683,130 @@ def parse_maze(template):
         maze.append(row)
     return maze
 
+# ─── PAC-MAN CUSTOMISATION OPTIONS ──────────────────────────────────────────
+PAC_COLOURS = [
+    ('Classic Yellow', YELLOW),
+    ('Cool Blue',      (0, 180, 255)),
+    ('Hot Pink',       (255, 80, 200)),
+    ('Lime Green',     (80, 255, 80)),
+    ('Fire Red',       (255, 60, 30)),
+    ('Royal Purple',   (180, 60, 255)),
+    ('Sunset Orange',  (255, 160, 40)),
+    ('Ice White',      (220, 240, 255)),
+    ('Mint',           (0, 255, 180)),
+    ('Gold',           (255, 215, 0)),
+]
+
+PAC_SHAPES = ['classic', 'square', 'star', 'triangle', 'diamond']
+PAC_HATS = ['none', 'crown', 'top_hat', 'cap', 'halo']
+
+# Active customisation (global so draw_pacman can use it)
+pac_custom = {'colour': YELLOW, 'shape': 'classic', 'hat': 'none'}
+
 # ─── SPRITE DRAWING (CLASSIC PIXEL ART) ─────────────────────────────────────
-def draw_pacman(surface, x, y, direction, frame, size=TILE):
-    """Draw classic Pac-Man with anti-aliased rendering."""
+def draw_pacman(surface, x, y, direction, frame, size=TILE, color=None, shape=None, hat=None):
+    """Draw Pac-Man with customisable colour, shape and hat."""
+    col = color if color else pac_custom['colour']
+    shp = shape if shape else pac_custom['shape']
+    ht = hat if hat else pac_custom['hat']
     cx, cy = x + size // 2, y + size // 2
     r = size // 2 - 2
     mouth_angle = abs(math.sin(frame * 0.3)) * 45
 
-    if mouth_angle < 2:
-        pygame.gfxdraw.filled_circle(surface, cx, cy, r, YELLOW)
-        pygame.gfxdraw.aacircle(surface, cx, cy, r, YELLOW)
-        pygame.gfxdraw.filled_circle(surface, cx - 2, cy - r // 2, 2, BLACK)
-        return
-
-    angles = {0: 0, 1: 180, 2: 270, 3: 90}  # right, left, down, up
+    angles = {0: 0, 1: 180, 2: 270, 3: 90}
     base = angles.get(direction, 0)
 
-    start_rad = math.radians(base + mouth_angle)
-    end_rad = math.radians(base + 360 - mouth_angle)
+    if shp == 'classic':
+        if mouth_angle < 2:
+            pygame.gfxdraw.filled_circle(surface, cx, cy, r, col)
+            pygame.gfxdraw.aacircle(surface, cx, cy, r, col)
+            pygame.gfxdraw.filled_circle(surface, cx - 2, cy - r // 2, 2, BLACK)
+            _draw_hat(surface, cx, cy, r, ht, size)
+            return
+        start_rad = math.radians(base + mouth_angle)
+        end_rad = math.radians(base + 360 - mouth_angle)
+        points = [(cx, cy)]
+        steps = 36
+        for i in range(steps + 1):
+            angle = start_rad + (end_rad - start_rad) * i / steps
+            px = cx + r * math.cos(angle)
+            py = cy - r * math.sin(angle)
+            points.append((int(px), int(py)))
+        if len(points) > 2:
+            pygame.gfxdraw.filled_polygon(surface, points, col)
+            pygame.gfxdraw.aapolygon(surface, points, col)
 
-    points = [(cx, cy)]
-    steps = 36
-    for i in range(steps + 1):
-        angle = start_rad + (end_rad - start_rad) * i / steps
-        px = cx + r * math.cos(angle)
-        py = cy - r * math.sin(angle)
-        points.append((int(px), int(py)))
-    if len(points) > 2:
-        pygame.gfxdraw.filled_polygon(surface, points, YELLOW)
-        pygame.gfxdraw.aapolygon(surface, points, YELLOW)
+    elif shp == 'square':
+        mouth_frac = mouth_angle / 45.0
+        half = r
+        if mouth_frac < 0.05:
+            pygame.draw.rect(surface, col, (cx - half, cy - half, half * 2, half * 2), border_radius=3)
+        else:
+            gap = int(half * mouth_frac * 0.6)
+            if direction == 0:
+                pygame.draw.rect(surface, col, (cx - half, cy - half, half * 2, half - gap), border_radius=3)
+                pygame.draw.rect(surface, col, (cx - half, cy + gap, half * 2, half - gap), border_radius=3)
+            elif direction == 1:
+                pygame.draw.rect(surface, col, (cx - half, cy - half, half * 2, half - gap), border_radius=3)
+                pygame.draw.rect(surface, col, (cx - half, cy + gap, half * 2, half - gap), border_radius=3)
+            elif direction == 2:
+                pygame.draw.rect(surface, col, (cx - half, cy - half, half - gap, half * 2), border_radius=3)
+                pygame.draw.rect(surface, col, (cx + gap, cy - half, half - gap, half * 2), border_radius=3)
+            else:
+                pygame.draw.rect(surface, col, (cx - half, cy - half, half - gap, half * 2), border_radius=3)
+                pygame.draw.rect(surface, col, (cx + gap, cy - half, half - gap, half * 2), border_radius=3)
+
+    elif shp == 'star':
+        pts = []
+        rot = math.radians(base - 90)
+        for i in range(10):
+            a = rot + math.radians(i * 36)
+            rad = r if i % 2 == 0 else r * 0.45
+            pts.append((int(cx + rad * math.cos(a)), int(cy + rad * math.sin(a))))
+        if mouth_angle > 2 and len(pts) >= 3:
+            pygame.gfxdraw.filled_polygon(surface, pts, col)
+            pygame.gfxdraw.aapolygon(surface, pts, col)
+        elif len(pts) >= 3:
+            pygame.gfxdraw.filled_polygon(surface, pts, col)
+            pygame.gfxdraw.aapolygon(surface, pts, col)
+
+    elif shp == 'triangle':
+        if mouth_angle < 2:
+            pts = []
+            for i in range(3):
+                a = math.radians(base - 90 + i * 120)
+                pts.append((int(cx + r * math.cos(a)), int(cy + r * math.sin(a))))
+            if len(pts) >= 3:
+                pygame.gfxdraw.filled_polygon(surface, pts, col)
+                pygame.gfxdraw.aapolygon(surface, pts, col)
+        else:
+            gap = mouth_angle * 0.4
+            pts_top = []
+            pts_bot = []
+            for i in range(3):
+                a = math.radians(base - 90 + i * 120)
+                px, py = cx + r * math.cos(a), cy + r * math.sin(a)
+                pts_top.append((int(px), int(py - gap)))
+                pts_bot.append((int(px), int(py + gap)))
+            mid = (cx, cy)
+            top_tri = [mid, pts_top[0], pts_top[1]]
+            bot_tri = [mid, pts_top[1], pts_top[2]]
+            if len(top_tri) >= 3:
+                pygame.gfxdraw.filled_polygon(surface, top_tri, col)
+            if len(bot_tri) >= 3:
+                pygame.gfxdraw.filled_polygon(surface, bot_tri, col)
+
+    elif shp == 'diamond':
+        stretch = 1.3
+        pts = [
+            (cx, int(cy - r * stretch)),
+            (int(cx + r * 0.7), cy),
+            (cx, int(cy + r * stretch)),
+            (int(cx - r * 0.7), cy),
+        ]
+        if len(pts) >= 3:
+            pygame.gfxdraw.filled_polygon(surface, pts, col)
+            pygame.gfxdraw.aapolygon(surface, pts, col)
 
     # Eye
     if direction == 0:
@@ -722,7 +817,48 @@ def draw_pacman(surface, x, y, direction, frame, size=TILE):
         ex, ey = cx - r // 3, cy + 2
     else:
         ex, ey = cx - r // 3, cy - 2
-    pygame.gfxdraw.filled_circle(surface, int(ex), int(ey), 2, BLACK)
+    pygame.gfxdraw.filled_circle(surface, int(ex), int(ey), max(1, size // 12), BLACK)
+
+    _draw_hat(surface, cx, cy, r, ht, size)
+
+
+def _draw_hat(surface, cx, cy, r, hat, size):
+    """Draw a hat/accessory on top of Pac-Man."""
+    if hat == 'none':
+        return
+    top_y = cy - r
+    if hat == 'crown':
+        cw = int(r * 1.2)
+        ch = int(r * 0.6)
+        pts = [
+            (cx - cw, top_y),
+            (cx - cw, top_y - ch),
+            (cx - cw // 2, top_y - ch // 3),
+            (cx, top_y - ch),
+            (cx + cw // 2, top_y - ch // 3),
+            (cx + cw, top_y - ch),
+            (cx + cw, top_y),
+        ]
+        pygame.draw.polygon(surface, GOLD, pts)
+        pygame.draw.polygon(surface, (200, 170, 0), pts, 1)
+        for dx in [-cw // 2, 0, cw // 2]:
+            pygame.draw.circle(surface, RED, (cx + dx, top_y - ch + 3), max(1, size // 10))
+    elif hat == 'top_hat':
+        brim_w = int(r * 1.4)
+        hat_w = int(r * 0.8)
+        hat_h = int(r * 0.9)
+        pygame.draw.rect(surface, (30, 30, 30), (cx - brim_w, top_y - 3, brim_w * 2, 6))
+        pygame.draw.rect(surface, (40, 40, 40), (cx - hat_w, top_y - hat_h, hat_w * 2, hat_h))
+        pygame.draw.rect(surface, (80, 0, 0), (cx - hat_w, top_y - int(hat_h * 0.3), hat_w * 2, 3))
+    elif hat == 'cap':
+        pygame.draw.arc(surface, RED, (cx - r, top_y - r // 2, r * 2, r), 0, math.pi, max(1, size // 6))
+        pygame.draw.line(surface, RED, (cx, top_y - r // 2), (cx + int(r * 1.2), top_y), max(1, size // 8))
+        pygame.draw.circle(surface, WHITE, (cx, top_y - r // 2), max(1, size // 10))
+    elif hat == 'halo':
+        halo_r = int(r * 0.8)
+        halo_y = top_y - int(r * 0.4)
+        glow = (255, 255, 150)
+        pygame.draw.ellipse(surface, glow, (cx - halo_r, halo_y - 3, halo_r * 2, 8), 2)
 
 def draw_ghost(surface, x, y, color, direction, frame, scared=False, size=TILE):
     """Draw a classic ghost sprite with anti-aliased rendering."""
@@ -999,7 +1135,7 @@ class Ghost:
 # ─── MAIN GAME CLASS ────────────────────────────────────────────────────────
 class PacManGame:
     def __init__(self):
-        self.state = 'menu'  # menu, classic, ghost_tag, pellet_frenzy, game_over, you_win
+        self.state = 'menu'  # menu, customise, classic, ghost_tag, pellet_frenzy, game_over, you_win
         self.font_big = pygame.font.SysFont('Consolas', 48, bold=True)
         self.font_med = pygame.font.SysFont('Consolas', 28, bold=True)
         self.font_sm  = pygame.font.SysFont('Consolas', 18)
@@ -1013,6 +1149,11 @@ class PacManGame:
         self.gt_score = 0
         self.pf_score = 0
         self.last_mode = 'classic'
+        # Customisation state
+        self.custom_section = 0  # 0=colour, 1=shape, 2=hat
+        self.custom_colour_idx = 0
+        self.custom_shape_idx = 0
+        self.custom_hat_idx = 0
         # Visual effects systems
         self.particles = ParticleSystem()
         self.popups = ScorePopupSystem()
@@ -1611,7 +1752,7 @@ class PacManGame:
         for rival in self.rivals:
             if rival['alive']:
                 draw_pacman(screen, int(rival['x']), int(rival['y']) + y_off,
-                            rival['dir'], self.frame)
+                            rival['dir'], self.frame, color=YELLOW, shape='classic', hat='none')
                 # Colour tint overlay to distinguish from player
                 cx = int(rival['x']) + TILE // 2
                 cy = int(rival['y']) + TILE // 2 + y_off
@@ -1830,7 +1971,7 @@ class PacManGame:
         for p in self.gt_pacmen:
             if p['alive']:
                 draw_pacman(screen, int(p['x']), int(p['y']) + y_off,
-                            p['dir'], self.frame, TILE)
+                            p['dir'], self.frame, TILE, color=YELLOW, shape='classic', hat='none')
 
         # Draw player ghost
         draw_ghost(screen, int(self.gt_ghost_x), int(self.gt_ghost_y) + y_off,
@@ -2098,9 +2239,10 @@ class PacManGame:
             ("🎮  CLASSIC PAC-MAN", "classic"),
             ("👻  GHOST TAG", "ghost_tag"),
             ("⚡  PELLET FRENZY", "pellet_frenzy"),
+            ("🎨  CUSTOMISE PAC-MAN", "customise"),
         ]
         for i, (label, _) in enumerate(options):
-            y = 260 + i * 55
+            y = 260 + i * 50
             color = YELLOW if i == self.menu_sel else WHITE
             if i == self.menu_sel:
                 # Selection indicator
@@ -2123,6 +2265,81 @@ class PacManGame:
         screen.blit(ctrl, (WIDTH // 2 - ctrl.get_width() // 2, HEIGHT - 50))
 
         credit = self.font_xs.render("Built by Toby with Copilot 🎮", True, GREY)
+        screen.blit(credit, (WIDTH // 2 - credit.get_width() // 2, HEIGHT - 25))
+
+    def draw_customise(self):
+        screen.fill(BLACK)
+
+        # Title
+        title = self.font_big.render("CUSTOMISE", True, YELLOW)
+        screen.blit(title, (WIDTH // 2 - title.get_width() // 2, 30))
+
+        # Live preview - big animated Pac-Man
+        preview_size = 80
+        preview_x = WIDTH // 2 - preview_size // 2
+        preview_y = 100
+        # Rotating preview
+        d = (self.frame // 30) % 4
+        draw_pacman(screen, preview_x, preview_y, d, self.frame, preview_size)
+
+        # Shadow under preview
+        pygame.draw.ellipse(screen, (30, 30, 30),
+                            (preview_x + 10, preview_y + preview_size + 5, preview_size - 20, 10))
+
+        sections = ['COLOUR', 'SHAPE', 'HAT']
+        values = [
+            PAC_COLOURS[self.custom_colour_idx][0],
+            PAC_SHAPES[self.custom_shape_idx].upper(),
+            PAC_HATS[self.custom_hat_idx].upper().replace('_', ' '),
+        ]
+
+        y_start = 210
+        for i, (section, value) in enumerate(zip(sections, values)):
+            y = y_start + i * 80
+            is_sel = (i == self.custom_section)
+
+            # Section label
+            label_col = YELLOW if is_sel else GREY
+            label = self.font_sm.render(section, True, label_col)
+            screen.blit(label, (WIDTH // 2 - label.get_width() // 2, y))
+
+            # Value with arrows
+            val_col = WHITE if is_sel else (150, 150, 150)
+            val_text = self.font_med.render(value, True, val_col)
+            val_x = WIDTH // 2 - val_text.get_width() // 2
+            screen.blit(val_text, (val_x, y + 22))
+
+            if is_sel:
+                # Draw selection arrows
+                arrow_bounce = int(math.sin(self.frame * 0.15) * 3)
+                left_arrow = self.font_med.render("<", True, YELLOW)
+                right_arrow = self.font_med.render(">", True, YELLOW)
+                screen.blit(left_arrow, (val_x - 35 + arrow_bounce, y + 22))
+                screen.blit(right_arrow, (val_x + val_text.get_width() + 15 - arrow_bounce, y + 22))
+
+                # Glow behind selected section
+                glow_rect = (WIDTH // 2 - 160, y - 5, 320, 65)
+                pygame.draw.rect(screen, (40, 40, 10), glow_rect, border_radius=8)
+
+            # Colour swatches for colour section
+            if i == 0:
+                swatch_y = y + 55
+                swatch_size = 14
+                total_w = len(PAC_COLOURS) * (swatch_size + 4)
+                sx = WIDTH // 2 - total_w // 2
+                for ci, (_, c) in enumerate(PAC_COLOURS):
+                    rect = (sx + ci * (swatch_size + 4), swatch_y, swatch_size, swatch_size)
+                    pygame.draw.rect(screen, c, rect, border_radius=3)
+                    if ci == self.custom_colour_idx:
+                        pygame.draw.rect(screen, WHITE, (rect[0] - 2, rect[1] - 2,
+                                         swatch_size + 4, swatch_size + 4), 2, border_radius=4)
+
+        # Controls hint
+        hint = self.font_xs.render("UP/DOWN to pick section  •  LEFT/RIGHT to change  •  ENTER or ESC to save",
+                                   True, GREY)
+        screen.blit(hint, (WIDTH // 2 - hint.get_width() // 2, HEIGHT - 50))
+
+        credit = self.font_xs.render("Make it YOUR Pac-Man! 🎨", True, GREY)
         screen.blit(credit, (WIDTH // 2 - credit.get_width() // 2, HEIGHT - 25))
 
     def draw_game_over(self):
@@ -2213,23 +2430,69 @@ class PacManGame:
 
                     if self.state == 'menu':
                         if event.key == pygame.K_UP or event.key == pygame.K_w:
-                            self.menu_sel = (self.menu_sel - 1) % 3
+                            self.menu_sel = (self.menu_sel - 1) % 4
                             self.sfx_channel.play(snd_menu)
                         elif event.key == pygame.K_DOWN or event.key == pygame.K_s:
-                            self.menu_sel = (self.menu_sel + 1) % 3
+                            self.menu_sel = (self.menu_sel + 1) % 4
                             self.sfx_channel.play(snd_menu)
                         elif event.key == pygame.K_RETURN:
-                            modes = ['classic', 'ghost_tag', 'pellet_frenzy']
+                            modes = ['classic', 'ghost_tag', 'pellet_frenzy', 'customise']
                             self.state = modes[self.menu_sel]
-                            self.last_mode = self.state
-                            self.particles.clear()
-                            self.popups.clear()
-                            if self.state == 'classic':
-                                self.reset_classic()
-                            elif self.state == 'ghost_tag':
-                                self.reset_ghost_tag()
-                            elif self.state == 'pellet_frenzy':
-                                self.reset_pellet_frenzy()
+                            if self.state == 'customise':
+                                self.sfx_channel.play(snd_menu)
+                            else:
+                                self.last_mode = self.state
+                                self.particles.clear()
+                                self.popups.clear()
+                                if self.state == 'classic':
+                                    self.reset_classic()
+                                elif self.state == 'ghost_tag':
+                                    self.reset_ghost_tag()
+                                elif self.state == 'pellet_frenzy':
+                                    self.reset_pellet_frenzy()
+                                self.sfx_channel.play(snd_win)
+
+                    elif self.state == 'customise':
+                        if event.key == pygame.K_ESCAPE:
+                            # Apply customisation and go back
+                            pac_custom['colour'] = PAC_COLOURS[self.custom_colour_idx][1]
+                            pac_custom['shape'] = PAC_SHAPES[self.custom_shape_idx]
+                            pac_custom['hat'] = PAC_HATS[self.custom_hat_idx]
+                            self.state = 'menu'
+                            self.sfx_channel.play(snd_menu)
+                        elif event.key == pygame.K_UP or event.key == pygame.K_w:
+                            self.custom_section = (self.custom_section - 1) % 3
+                            self.sfx_channel.play(snd_menu)
+                        elif event.key == pygame.K_DOWN or event.key == pygame.K_s:
+                            self.custom_section = (self.custom_section + 1) % 3
+                            self.sfx_channel.play(snd_menu)
+                        elif event.key == pygame.K_LEFT or event.key == pygame.K_a:
+                            if self.custom_section == 0:
+                                self.custom_colour_idx = (self.custom_colour_idx - 1) % len(PAC_COLOURS)
+                            elif self.custom_section == 1:
+                                self.custom_shape_idx = (self.custom_shape_idx - 1) % len(PAC_SHAPES)
+                            else:
+                                self.custom_hat_idx = (self.custom_hat_idx - 1) % len(PAC_HATS)
+                            pac_custom['colour'] = PAC_COLOURS[self.custom_colour_idx][1]
+                            pac_custom['shape'] = PAC_SHAPES[self.custom_shape_idx]
+                            pac_custom['hat'] = PAC_HATS[self.custom_hat_idx]
+                            self.sfx_channel.play(snd_menu)
+                        elif event.key == pygame.K_RIGHT or event.key == pygame.K_d:
+                            if self.custom_section == 0:
+                                self.custom_colour_idx = (self.custom_colour_idx + 1) % len(PAC_COLOURS)
+                            elif self.custom_section == 1:
+                                self.custom_shape_idx = (self.custom_shape_idx + 1) % len(PAC_SHAPES)
+                            else:
+                                self.custom_hat_idx = (self.custom_hat_idx + 1) % len(PAC_HATS)
+                            pac_custom['colour'] = PAC_COLOURS[self.custom_colour_idx][1]
+                            pac_custom['shape'] = PAC_SHAPES[self.custom_shape_idx]
+                            pac_custom['hat'] = PAC_HATS[self.custom_hat_idx]
+                            self.sfx_channel.play(snd_menu)
+                        elif event.key == pygame.K_RETURN:
+                            pac_custom['colour'] = PAC_COLOURS[self.custom_colour_idx][1]
+                            pac_custom['shape'] = PAC_SHAPES[self.custom_shape_idx]
+                            pac_custom['hat'] = PAC_HATS[self.custom_hat_idx]
+                            self.state = 'menu'
                             self.sfx_channel.play(snd_win)
 
                     elif self.state == 'classic':
@@ -2258,6 +2521,8 @@ class PacManGame:
             screen.fill(BLACK)
             if self.state == 'menu':
                 self.draw_menu()
+            elif self.state == 'customise':
+                self.draw_customise()
             elif self.state == 'classic':
                 self.draw_classic()
             elif self.state == 'ghost_tag':
