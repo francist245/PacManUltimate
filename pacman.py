@@ -2465,7 +2465,7 @@ class PacManGame:
                     self.bb_won = True
                     self.bb_win_timer = 3.0
                     self.bb_score += 5000
-                    self.particles.emit_level_clear(WIDTH // 2, HEIGHT // 2)
+                    self.particles.emit_level_clear()
                     self.shake.start(10, 1.0)
                     self.sfx_channel.play(snd_win)
                     self.music_channel.stop()
