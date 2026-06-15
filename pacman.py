@@ -2222,8 +2222,8 @@ class PacManGame:
                     self.bb_maze[r][c] = 0
         self.bb_score = 0
         # Player
-        self.bb_pac_col = 13
-        self.bb_pac_row = 26
+        self.bb_pac_col = 14
+        self.bb_pac_row = 23
         self.bb_pac_x = self.bb_pac_col * TILE
         self.bb_pac_y = self.bb_pac_row * TILE
         self.bb_pac_dir = 3
@@ -2238,7 +2238,7 @@ class PacManGame:
         self.bb_pellets = []
         # Ally Pac-Men
         self.bb_allies = []
-        ally_spawns = [(6, 26), (20, 26), (13, 29)]
+        ally_spawns = [(6, 23), (20, 23), (14, 29)]
         ally_names = ['CHOMPY', 'ZIPPY', 'SPARKY']
         ally_colours = [CYAN, ORANGE, PINK]
         for i, (sc, sr) in enumerate(ally_spawns):
@@ -2314,15 +2314,21 @@ class PacManGame:
         elif keys_pressed[pygame.K_UP] or keys_pressed[pygame.K_w]:
             self.bb_pac_next_dir = 3
 
-        # Shoot pellet with SPACE
-        if keys_pressed[pygame.K_SPACE] and self.bb_shoot_cooldown <= 0:
+        # Shoot pellet with SPACE or mouse click — aims toward mouse cursor
+        mouse_shooting = pygame.mouse.get_pressed()[0]
+        if (keys_pressed[pygame.K_SPACE] or mouse_shooting) and self.bb_shoot_cooldown <= 0:
             self.bb_shoot_cooldown = 0.25
-            dc = {0: 1, 1: -1, 2: 0, 3: 0}[self.bb_pac_dir]
-            dr = {0: 0, 1: 0, 2: 1, 3: -1}[self.bb_pac_dir]
+            mx, my = pygame.mouse.get_pos()
+            px = self.bb_pac_x + TILE // 2
+            py = self.bb_pac_y + TILE // 2 + 40  # account for y_off in screen coords
+            aim_dx = mx - px
+            aim_dy = my - py
+            aim_dist = max(1, math.sqrt(aim_dx * aim_dx + aim_dy * aim_dy))
             self.bb_pellets.append({
-                'x': self.bb_pac_x + TILE // 2,
-                'y': self.bb_pac_y + TILE // 2,
-                'dx': dc * 350, 'dy': dr * 350,
+                'x': px,
+                'y': py - 40,  # store in maze coords (without y_off)
+                'dx': aim_dx / aim_dist * 350,
+                'dy': aim_dy / aim_dist * 350,
                 'life': 2.0, 'owner': 'player',
                 'color': pac_custom['colour'],
             })
@@ -2436,20 +2442,20 @@ class PacManGame:
                 continue
             # Wall collision — remove pellet if it hits a wall
             pc = int(p['x']) // TILE
-            pr = int(p['y'] - 40) // TILE  # subtract y_off
+            pr = int(p['y']) // TILE
             if 0 <= pr < ROWS and 0 <= pc < COLS and self.bb_maze[pr][pc] == 1:
-                self.particles.emit_dot_eat(int(p['x']), int(p['y']), p['color'])
+                self.particles.emit_dot_eat(int(p['x']), int(p['y']) + 40, p['color'])
                 self.bb_pellets.remove(p)
                 continue
             # Boss collision
-            dist = math.sqrt((p['x'] - boss_cx) ** 2 + (p['y'] - 40 - boss_cy) ** 2)
+            dist = math.sqrt((p['x'] - boss_cx) ** 2 + (p['y'] - boss_cy) ** 2)
             if dist < boss_hit_r:
                 self.bb_boss_hp -= 1
                 self.bb_boss_flash = 0.15
                 pts = 100 if p['owner'] == 'player' else 50
                 self.bb_score += pts
-                self.particles.emit_ghost_eat(int(p['x']), int(p['y']), RED)
-                self.popups.add(int(p['x']), int(p['y']), f'-1 HP!', RED, self.font_popup)
+                self.particles.emit_ghost_eat(int(p['x']), int(p['y']) + 40, RED)
+                self.popups.add(int(p['x']), int(p['y']) + 40, f'-1 HP!', RED, self.font_popup)
                 self.shake.start(3, 0.15)
                 self.sfx_channel.play(snd_eat_ghost)
                 if p in self.bb_pellets:
@@ -2585,7 +2591,7 @@ class PacManGame:
 
             # Minion vs pellet collision
             for p in self.bb_pellets[:]:
-                dist = math.sqrt((p['x'] - m['x'] - TILE // 2) ** 2 + (p['y'] - 40 - m['y'] - TILE // 2) ** 2)
+                dist = math.sqrt((p['x'] - m['x'] - TILE // 2) ** 2 + (p['y'] - m['y'] - TILE // 2) ** 2)
                 if dist < TILE * 0.7:
                     self.particles.emit_ghost_eat(int(m['x']) + TILE // 2, int(m['y']) + TILE // 2 + 40, m['color'])
                     self.bb_score += 200
@@ -2726,7 +2732,7 @@ class PacManGame:
 
         # Draw pellets in flight
         for p in self.bb_pellets:
-            px, py = int(p['x']), int(p['y'])
+            px, py = int(p['x']), int(p['y']) + y_off
             pygame.draw.circle(screen, p['color'], (px, py), 4)
             pygame.draw.circle(screen, WHITE, (px, py), 4, 1)
 
@@ -2758,11 +2764,18 @@ class PacManGame:
             draw_pacman(screen, int(self.bb_pac_x), int(self.bb_pac_y) + y_off,
                         self.bb_pac_dir, self.frame)
 
+        # Draw crosshair at mouse position
+        mx, my = pygame.mouse.get_pos()
+        cross_col = pac_custom['colour']
+        pygame.draw.line(screen, cross_col, (mx - 8, my), (mx + 8, my), 2)
+        pygame.draw.line(screen, cross_col, (mx, my - 8), (mx, my + 8), 2)
+        pygame.draw.circle(screen, cross_col, (mx, my), 6, 1)
+
         # Ready text
         if self.bb_ready > 0:
             txt = self.font_big.render("FIGHT!", True, RED)
             screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 50))
-            hint = self.font_sm.render("SPACE to shoot pellets!", True, YELLOW)
+            hint = self.font_sm.render("Aim with MOUSE, SPACE to shoot!", True, YELLOW)
             screen.blit(hint, (WIDTH // 2 - hint.get_width() // 2, HEIGHT // 2 + 10))
 
         # Win text
