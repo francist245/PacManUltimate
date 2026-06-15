@@ -1135,7 +1135,7 @@ class Ghost:
 # ─── MAIN GAME CLASS ────────────────────────────────────────────────────────
 class PacManGame:
     def __init__(self):
-        self.state = 'menu'  # menu, customise, classic, ghost_tag, pellet_frenzy, game_over, you_win
+        self.state = 'menu'  # menu, customise, level_select, classic, ghost_tag, pellet_frenzy, game_over, you_win
         self.font_big = pygame.font.SysFont('Consolas', 48, bold=True)
         self.font_med = pygame.font.SysFont('Consolas', 28, bold=True)
         self.font_sm  = pygame.font.SysFont('Consolas', 18)
@@ -1154,6 +1154,8 @@ class PacManGame:
         self.custom_colour_idx = 0
         self.custom_shape_idx = 0
         self.custom_hat_idx = 0
+        # Level select state
+        self.level_select_idx = 0
         # Visual effects systems
         self.particles = ParticleSystem()
         self.popups = ScorePopupSystem()
@@ -1162,11 +1164,11 @@ class PacManGame:
         self.reset_classic()
 
     # ─── CLASSIC MODE ────────────────────────────────────────────────────
-    def reset_classic(self, new_game=True):
+    def reset_classic(self, new_game=True, start_level=None):
         if new_game:
             self.score = 0
             self.lives = 3
-            self.level = 1
+            self.level = start_level if start_level else 1
             for rival in getattr(self, 'rivals', []):
                 rival['score'] = 0
 
@@ -2239,10 +2241,11 @@ class PacManGame:
             ("🎮  CLASSIC PAC-MAN", "classic"),
             ("👻  GHOST TAG", "ghost_tag"),
             ("⚡  PELLET FRENZY", "pellet_frenzy"),
+            ("🗺️  CHOOSE LEVEL", "level_select"),
             ("🎨  CUSTOMISE PAC-MAN", "customise"),
         ]
         for i, (label, _) in enumerate(options):
-            y = 260 + i * 50
+            y = 255 + i * 42
             color = YELLOW if i == self.menu_sel else WHITE
             if i == self.menu_sel:
                 # Selection indicator
@@ -2257,7 +2260,7 @@ class PacManGame:
         # High score
         if self.high_score > 0:
             hs = self.font_sm.render(f"HIGH SCORE: {self.high_score}", True, YELLOW)
-            screen.blit(hs, (WIDTH // 2 - hs.get_width() // 2, 440))
+            screen.blit(hs, (WIDTH // 2 - hs.get_width() // 2, 475))
 
         # Controls
         ctrl = self.font_xs.render("Arrow Keys / WASD to move  •  ENTER to select  •  ESC for menu",
@@ -2340,6 +2343,85 @@ class PacManGame:
         screen.blit(hint, (WIDTH // 2 - hint.get_width() // 2, HEIGHT - 50))
 
         credit = self.font_xs.render("Make it YOUR Pac-Man! 🎨", True, GREY)
+        screen.blit(credit, (WIDTH // 2 - credit.get_width() // 2, HEIGHT - 25))
+
+    def draw_level_select(self):
+        screen.fill(BLACK)
+
+        # Title
+        title = self.font_big.render("CHOOSE LEVEL", True, YELLOW)
+        screen.blit(title, (WIDTH // 2 - title.get_width() // 2, 30))
+
+        level_names = [
+            ("1 — CLASSIC",       "The original maze"),
+            ("2 — NEON ARENA",    "Open centre, tight edges"),
+            ("3 — SHADOW MAZE",   "Winding labyrinth paths"),
+            ("4 — FIRE FORTRESS", "Thick walls, tight corridors"),
+            ("5 — ICE GAUNTLET",  "Narrow paths, lots of ghosts"),
+        ]
+
+        # Draw mini maze preview of selected level
+        sel = self.level_select_idx
+        theme = LEVEL_THEMES[sel]
+        maze_data = ALL_MAZES[sel]
+        mini_tile = 5
+        maze_w = COLS * mini_tile
+        maze_h = ROWS * mini_tile
+        mx = WIDTH // 2 - maze_w // 2
+        my = 100
+
+        # Background for preview
+        bg_col = theme.get('bg', BLACK)
+        pygame.draw.rect(screen, bg_col, (mx - 4, my - 4, maze_w + 8, maze_h + 8), border_radius=4)
+        pygame.draw.rect(screen, theme['wall'], (mx - 4, my - 4, maze_w + 8, maze_h + 8), 2, border_radius=4)
+
+        for r_idx, row_str in enumerate(maze_data):
+            for c_idx, ch in enumerate(row_str):
+                px = mx + c_idx * mini_tile
+                py = my + r_idx * mini_tile
+                v = int(ch)
+                if v == 1:
+                    pygame.draw.rect(screen, theme['wall'], (px, py, mini_tile, mini_tile))
+                elif v == 2:
+                    cx_d = px + mini_tile // 2
+                    cy_d = py + mini_tile // 2
+                    pygame.draw.circle(screen, theme['dot'], (cx_d, cy_d), 1)
+                elif v == 3:
+                    cx_d = px + mini_tile // 2
+                    cy_d = py + mini_tile // 2
+                    pygame.draw.circle(screen, theme['pellet'], (cx_d, cy_d), 2)
+                elif v == 5:
+                    pygame.draw.rect(screen, theme['gate'], (px, py + mini_tile // 2, mini_tile, 1))
+
+        # Level list below preview
+        list_y = my + maze_h + 20
+        for i, (name, desc) in enumerate(level_names):
+            y = list_y + i * 42
+            is_sel = (i == self.level_select_idx)
+            lv_theme = LEVEL_THEMES[i]
+
+            if is_sel:
+                # Glow background
+                pygame.draw.rect(screen, (40, 40, 10), (WIDTH // 2 - 180, y - 4, 360, 38), border_radius=6)
+                # Arrow indicator
+                bounce = int(math.sin(self.frame * 0.15) * 3)
+                arrow = self.font_med.render("►", True, lv_theme['wall'])
+                screen.blit(arrow, (WIDTH // 2 - 195 + bounce, y))
+
+            name_col = lv_theme['wall'] if is_sel else GREY
+            name_txt = self.font_med.render(name, True, name_col)
+            screen.blit(name_txt, (WIDTH // 2 - 160, y))
+
+            if is_sel:
+                desc_txt = self.font_xs.render(desc, True, WHITE)
+                screen.blit(desc_txt, (WIDTH // 2 - 160, y + 24))
+
+        # Controls
+        hint = self.font_xs.render("UP/DOWN or LEFT/RIGHT to browse  •  ENTER to play  •  ESC to go back",
+                                   True, GREY)
+        screen.blit(hint, (WIDTH // 2 - hint.get_width() // 2, HEIGHT - 50))
+
+        credit = self.font_xs.render("Pick your battlefield! ⚔️", True, GREY)
         screen.blit(credit, (WIDTH // 2 - credit.get_width() // 2, HEIGHT - 25))
 
     def draw_game_over(self):
@@ -2430,15 +2512,15 @@ class PacManGame:
 
                     if self.state == 'menu':
                         if event.key == pygame.K_UP or event.key == pygame.K_w:
-                            self.menu_sel = (self.menu_sel - 1) % 4
+                            self.menu_sel = (self.menu_sel - 1) % 5
                             self.sfx_channel.play(snd_menu)
                         elif event.key == pygame.K_DOWN or event.key == pygame.K_s:
-                            self.menu_sel = (self.menu_sel + 1) % 4
+                            self.menu_sel = (self.menu_sel + 1) % 5
                             self.sfx_channel.play(snd_menu)
                         elif event.key == pygame.K_RETURN:
-                            modes = ['classic', 'ghost_tag', 'pellet_frenzy', 'customise']
+                            modes = ['classic', 'ghost_tag', 'pellet_frenzy', 'level_select', 'customise']
                             self.state = modes[self.menu_sel]
-                            if self.state == 'customise':
+                            if self.state in ('customise', 'level_select'):
                                 self.sfx_channel.play(snd_menu)
                             else:
                                 self.last_mode = self.state
@@ -2495,6 +2577,31 @@ class PacManGame:
                             self.state = 'menu'
                             self.sfx_channel.play(snd_win)
 
+                    elif self.state == 'level_select':
+                        if event.key == pygame.K_ESCAPE:
+                            self.state = 'menu'
+                            self.sfx_channel.play(snd_menu)
+                        elif event.key == pygame.K_LEFT or event.key == pygame.K_a:
+                            self.level_select_idx = (self.level_select_idx - 1) % len(ALL_MAZES)
+                            self.sfx_channel.play(snd_menu)
+                        elif event.key == pygame.K_RIGHT or event.key == pygame.K_d:
+                            self.level_select_idx = (self.level_select_idx + 1) % len(ALL_MAZES)
+                            self.sfx_channel.play(snd_menu)
+                        elif event.key == pygame.K_UP or event.key == pygame.K_w:
+                            self.level_select_idx = (self.level_select_idx - 1) % len(ALL_MAZES)
+                            self.sfx_channel.play(snd_menu)
+                        elif event.key == pygame.K_DOWN or event.key == pygame.K_s:
+                            self.level_select_idx = (self.level_select_idx + 1) % len(ALL_MAZES)
+                            self.sfx_channel.play(snd_menu)
+                        elif event.key == pygame.K_RETURN:
+                            chosen_level = self.level_select_idx + 1
+                            self.state = 'classic'
+                            self.last_mode = 'classic'
+                            self.particles.clear()
+                            self.popups.clear()
+                            self.reset_classic(new_game=True, start_level=chosen_level)
+                            self.sfx_channel.play(snd_win)
+
                     elif self.state == 'classic':
                         if event.key == pygame.K_p:
                             self.paused = not self.paused
@@ -2523,6 +2630,8 @@ class PacManGame:
                 self.draw_menu()
             elif self.state == 'customise':
                 self.draw_customise()
+            elif self.state == 'level_select':
+                self.draw_level_select()
             elif self.state == 'classic':
                 self.draw_classic()
             elif self.state == 'ghost_tag':
