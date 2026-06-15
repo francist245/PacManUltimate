@@ -2212,6 +2212,566 @@ class PacManGame:
             txt = self.font_big.render("GO WILD!", True, YELLOW)
             screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 30))
 
+    # ─── BOSS BATTLE MODE ────────────────────────────────────────────────
+    def reset_boss_battle(self):
+        self.bb_maze = parse_maze(MAZE_TEMPLATE)
+        # Remove dots — boss arena
+        for r in range(ROWS):
+            for c in range(COLS):
+                if self.bb_maze[r][c] in [2, 3]:
+                    self.bb_maze[r][c] = 0
+        self.bb_score = 0
+        # Player
+        self.bb_pac_col = 13
+        self.bb_pac_row = 26
+        self.bb_pac_x = self.bb_pac_col * TILE
+        self.bb_pac_y = self.bb_pac_row * TILE
+        self.bb_pac_dir = 3
+        self.bb_pac_next_dir = 3
+        self.bb_move_progress = 0
+        self.bb_pac_next_col = self.bb_pac_col
+        self.bb_pac_next_row = self.bb_pac_row
+        self.bb_lives = 3
+        self.bb_invincible = 0
+        self.bb_shoot_cooldown = 0
+        # Projectiles (pellets shot by player and allies)
+        self.bb_pellets = []
+        # Ally Pac-Men
+        self.bb_allies = []
+        ally_spawns = [(6, 26), (20, 26), (13, 29)]
+        ally_names = ['CHOMPY', 'ZIPPY', 'SPARKY']
+        ally_colours = [CYAN, ORANGE, PINK]
+        for i, (sc, sr) in enumerate(ally_spawns):
+            self.bb_allies.append({
+                'name': ally_names[i], 'color': ally_colours[i],
+                'col': sc, 'row': sr, 'x': sc * TILE, 'y': sr * TILE,
+                'dir': 3, 'next_dir': 3,
+                'move_progress': 0, 'next_col': sc, 'next_row': sr,
+                'alive': True, 'shoot_timer': random.uniform(0.5, 1.5),
+                'respawn_timer': 0,
+            })
+        # Boss Ghost — big and mean
+        self.bb_boss_col = 13
+        self.bb_boss_row = 5
+        self.bb_boss_x = self.bb_boss_col * TILE
+        self.bb_boss_y = self.bb_boss_row * TILE
+        self.bb_boss_dir = 0
+        self.bb_boss_next_col = self.bb_boss_col
+        self.bb_boss_next_row = self.bb_boss_row
+        self.bb_boss_move_progress = 0
+        self.bb_boss_hp = 30
+        self.bb_boss_max_hp = 30
+        self.bb_boss_phase = 1  # gets harder at lower HP
+        self.bb_boss_flash = 0
+        self.bb_boss_charge_timer = 0
+        self.bb_boss_charging = False
+        self.bb_boss_charge_dir = 0
+        self.bb_boss_spawn_timer = 5.0
+        # Mini-ghosts spawned by boss
+        self.bb_minions = []
+        self.bb_ready = 2.5
+        self.bb_won = False
+        self.bb_win_timer = 0
+
+    def _bb_can_move(self, maze, col, row, direction):
+        dc = {0: 1, 1: -1, 2: 0, 3: 0}[direction]
+        dr = {0: 0, 1: 0, 2: 1, 3: -1}[direction]
+        nc = col + dc
+        nr = row + dr
+        if nc < 0: nc = COLS - 1
+        if nc >= COLS: nc = 0
+        if 0 <= nr < ROWS and maze[nr][nc] not in (1, 4, 5):
+            return True, nc, nr
+        return False, col, row
+
+    def update_boss_battle(self, dt, keys_pressed):
+        if self.bb_won:
+            self.bb_win_timer -= dt
+            if self.bb_win_timer <= 0:
+                self.state = 'game_over'
+                self.high_score = max(self.high_score, self.bb_score)
+            return
+
+        if self.bb_ready > 0:
+            self.bb_ready -= dt
+            return
+
+        if not self.music_channel.get_busy():
+            self.music_channel.play(music_chase, loops=-1)
+
+        if self.bb_invincible > 0:
+            self.bb_invincible -= dt
+        if self.bb_shoot_cooldown > 0:
+            self.bb_shoot_cooldown -= dt
+
+        # ── Player input ──
+        if keys_pressed[pygame.K_RIGHT] or keys_pressed[pygame.K_d]:
+            self.bb_pac_next_dir = 0
+        elif keys_pressed[pygame.K_LEFT] or keys_pressed[pygame.K_a]:
+            self.bb_pac_next_dir = 1
+        elif keys_pressed[pygame.K_DOWN] or keys_pressed[pygame.K_s]:
+            self.bb_pac_next_dir = 2
+        elif keys_pressed[pygame.K_UP] or keys_pressed[pygame.K_w]:
+            self.bb_pac_next_dir = 3
+
+        # Shoot pellet with SPACE
+        if keys_pressed[pygame.K_SPACE] and self.bb_shoot_cooldown <= 0:
+            self.bb_shoot_cooldown = 0.25
+            dc = {0: 1, 1: -1, 2: 0, 3: 0}[self.bb_pac_dir]
+            dr = {0: 0, 1: 0, 2: 1, 3: -1}[self.bb_pac_dir]
+            self.bb_pellets.append({
+                'x': self.bb_pac_x + TILE // 2,
+                'y': self.bb_pac_y + TILE // 2,
+                'dx': dc * 350, 'dy': dr * 350,
+                'life': 2.0, 'owner': 'player',
+                'color': pac_custom['colour'],
+            })
+            self.sfx_channel.play(snd_chomp)
+
+        # ── Move player ──
+        speed = 9.0
+        self.bb_move_progress += speed * dt
+        if self.bb_move_progress >= 1.0:
+            self.bb_move_progress = 0
+            self.bb_pac_col = self.bb_pac_next_col
+            self.bb_pac_row = self.bb_pac_next_row
+            self.bb_pac_x = self.bb_pac_col * TILE
+            self.bb_pac_y = self.bb_pac_row * TILE
+            ok, nc, nr = self._bb_can_move(self.bb_maze, self.bb_pac_col, self.bb_pac_row, self.bb_pac_next_dir)
+            if ok:
+                self.bb_pac_dir = self.bb_pac_next_dir
+                self.bb_pac_next_col = nc
+                self.bb_pac_next_row = nr
+            else:
+                ok2, nc2, nr2 = self._bb_can_move(self.bb_maze, self.bb_pac_col, self.bb_pac_row, self.bb_pac_dir)
+                if ok2:
+                    self.bb_pac_next_col = nc2
+                    self.bb_pac_next_row = nr2
+                else:
+                    self.bb_pac_next_col = self.bb_pac_col
+                    self.bb_pac_next_row = self.bb_pac_row
+        else:
+            dcol = self.bb_pac_next_col - self.bb_pac_col
+            if abs(dcol) > 1:
+                self.bb_pac_x = self.bb_pac_next_col * TILE
+            else:
+                self.bb_pac_x = self.bb_pac_col * TILE + dcol * TILE * self.bb_move_progress
+            self.bb_pac_y = self.bb_pac_row * TILE + (self.bb_pac_next_row - self.bb_pac_row) * TILE * self.bb_move_progress
+
+        # ── Move & shoot allies ──
+        dc_map = {0: 1, 1: -1, 2: 0, 3: 0}
+        dr_map = {0: 0, 1: 0, 2: 1, 3: -1}
+        for ally in self.bb_allies:
+            if not ally['alive']:
+                ally['respawn_timer'] -= dt
+                if ally['respawn_timer'] <= 0:
+                    ally['alive'] = True
+                    ally['col'] = random.choice([1, 26])
+                    ally['row'] = random.choice([23, 26, 29])
+                    ally['x'] = ally['col'] * TILE
+                    ally['y'] = ally['row'] * TILE
+                    ally['next_col'] = ally['col']
+                    ally['next_row'] = ally['row']
+                continue
+
+            # AI movement — move toward boss, avoid walls
+            ally['move_progress'] += 7.0 * dt
+            if ally['move_progress'] >= 1.0:
+                ally['move_progress'] = 0
+                ally['col'] = ally['next_col']
+                ally['row'] = ally['next_row']
+                ally['x'] = ally['col'] * TILE
+                ally['y'] = ally['row'] * TILE
+                best_dir = ally['dir']
+                best_dist = float('inf')
+                dirs = [0, 1, 2, 3]
+                random.shuffle(dirs)
+                for d in dirs:
+                    nc = ally['col'] + dc_map[d]
+                    nr = ally['row'] + dr_map[d]
+                    if nc < 0: nc = COLS - 1
+                    if nc >= COLS: nc = 0
+                    if 0 <= nr < ROWS and self.bb_maze[nr][nc] not in (1, 4, 5):
+                        dist = (nc - self.bb_boss_col) ** 2 + (nr - self.bb_boss_row) ** 2
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_dir = d
+                            ally['next_col'] = nc
+                            ally['next_row'] = nr
+                ally['dir'] = best_dir
+            else:
+                ally['x'] = ally['col'] * TILE + (ally['next_col'] - ally['col']) * TILE * ally['move_progress']
+                ally['y'] = ally['row'] * TILE + (ally['next_row'] - ally['row']) * TILE * ally['move_progress']
+
+            # Ally auto-shoot
+            ally['shoot_timer'] -= dt
+            if ally['shoot_timer'] <= 0:
+                ally['shoot_timer'] = random.uniform(0.8, 1.8)
+                # Aim toward boss
+                bx = self.bb_boss_x + TILE
+                by = self.bb_boss_y + TILE
+                ax = ally['x'] + TILE // 2
+                ay = ally['y'] + TILE // 2
+                dx = bx - ax
+                dy = by - ay
+                dist = max(1, math.sqrt(dx * dx + dy * dy))
+                self.bb_pellets.append({
+                    'x': ax, 'y': ay,
+                    'dx': dx / dist * 300, 'dy': dy / dist * 300,
+                    'life': 2.0, 'owner': 'ally',
+                    'color': ally['color'],
+                })
+
+        # ── Update pellets ──
+        boss_cx = self.bb_boss_x + TILE
+        boss_cy = self.bb_boss_y + TILE
+        boss_hit_r = TILE * 1.5
+        for p in self.bb_pellets[:]:
+            p['x'] += p['dx'] * dt
+            p['y'] += p['dy'] * dt
+            p['life'] -= dt
+            # Off-screen or expired
+            if p['life'] <= 0 or p['x'] < -20 or p['x'] > WIDTH + 20 or p['y'] < -20 or p['y'] > HEIGHT + 20:
+                self.bb_pellets.remove(p)
+                continue
+            # Wall collision — remove pellet if it hits a wall
+            pc = int(p['x']) // TILE
+            pr = int(p['y'] - 40) // TILE  # subtract y_off
+            if 0 <= pr < ROWS and 0 <= pc < COLS and self.bb_maze[pr][pc] == 1:
+                self.particles.emit_dot_eat(int(p['x']), int(p['y']), p['color'])
+                self.bb_pellets.remove(p)
+                continue
+            # Boss collision
+            dist = math.sqrt((p['x'] - boss_cx) ** 2 + (p['y'] - 40 - boss_cy) ** 2)
+            if dist < boss_hit_r:
+                self.bb_boss_hp -= 1
+                self.bb_boss_flash = 0.15
+                pts = 100 if p['owner'] == 'player' else 50
+                self.bb_score += pts
+                self.particles.emit_ghost_eat(int(p['x']), int(p['y']), RED)
+                self.popups.add(int(p['x']), int(p['y']), f'-1 HP!', RED, self.font_popup)
+                self.shake.start(3, 0.15)
+                self.sfx_channel.play(snd_eat_ghost)
+                if p in self.bb_pellets:
+                    self.bb_pellets.remove(p)
+                # Check phase transitions
+                if self.bb_boss_hp <= 0:
+                    self.bb_won = True
+                    self.bb_win_timer = 3.0
+                    self.bb_score += 5000
+                    self.particles.emit_level_clear(WIDTH // 2, HEIGHT // 2)
+                    self.shake.start(10, 1.0)
+                    self.sfx_channel.play(snd_win)
+                    self.music_channel.stop()
+                    return
+                elif self.bb_boss_hp <= 10 and self.bb_boss_phase == 2:
+                    self.bb_boss_phase = 3
+                elif self.bb_boss_hp <= 20 and self.bb_boss_phase == 1:
+                    self.bb_boss_phase = 2
+
+        # ── Boss AI ──
+        self.bb_boss_flash = max(0, self.bb_boss_flash - dt)
+        boss_speed = 3.0 + self.bb_boss_phase * 1.5
+
+        # Boss charges toward player sometimes
+        self.bb_boss_charge_timer -= dt
+        if self.bb_boss_charge_timer <= 0 and not self.bb_boss_charging:
+            if random.random() < 0.02 * self.bb_boss_phase:
+                self.bb_boss_charging = True
+                dx = self.bb_pac_x - self.bb_boss_x
+                dy = self.bb_pac_y - self.bb_boss_y
+                if abs(dx) > abs(dy):
+                    self.bb_boss_charge_dir = 0 if dx > 0 else 1
+                else:
+                    self.bb_boss_charge_dir = 2 if dy > 0 else 3
+                self.bb_boss_charge_timer = 2.0
+
+        if self.bb_boss_charging:
+            self.bb_boss_charge_timer -= dt
+            if self.bb_boss_charge_timer <= 0:
+                self.bb_boss_charging = False
+                self.bb_boss_charge_timer = random.uniform(3.0 / self.bb_boss_phase, 6.0 / self.bb_boss_phase)
+
+        # Boss movement
+        self.bb_boss_move_progress += boss_speed * dt
+        if self.bb_boss_move_progress >= 1.0:
+            self.bb_boss_move_progress = 0
+            self.bb_boss_col = self.bb_boss_next_col
+            self.bb_boss_row = self.bb_boss_next_row
+            self.bb_boss_x = self.bb_boss_col * TILE
+            self.bb_boss_y = self.bb_boss_row * TILE
+
+            if self.bb_boss_charging:
+                ok, nc, nr = self._bb_can_move(self.bb_maze, self.bb_boss_col, self.bb_boss_row, self.bb_boss_charge_dir)
+                if ok:
+                    self.bb_boss_dir = self.bb_boss_charge_dir
+                    self.bb_boss_next_col = nc
+                    self.bb_boss_next_row = nr
+                else:
+                    self.bb_boss_charging = False
+            else:
+                best_dir = self.bb_boss_dir
+                best_dist = float('inf')
+                dirs = [0, 1, 2, 3]
+                random.shuffle(dirs)
+                for d in dirs:
+                    nc = self.bb_boss_col + dc_map[d]
+                    nr = self.bb_boss_row + dr_map[d]
+                    if nc < 0: nc = COLS - 1
+                    if nc >= COLS: nc = 0
+                    if 0 <= nr < ROWS and self.bb_maze[nr][nc] not in (1, 4, 5):
+                        dist = (nc - self.bb_pac_col) ** 2 + (nr - self.bb_pac_row) ** 2
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_dir = d
+                            self.bb_boss_next_col = nc
+                            self.bb_boss_next_row = nr
+                self.bb_boss_dir = best_dir
+        else:
+            self.bb_boss_x = self.bb_boss_col * TILE + (self.bb_boss_next_col - self.bb_boss_col) * TILE * self.bb_boss_move_progress
+            self.bb_boss_y = self.bb_boss_row * TILE + (self.bb_boss_next_row - self.bb_boss_row) * TILE * self.bb_boss_move_progress
+
+        # Boss spawns minions
+        self.bb_boss_spawn_timer -= dt
+        if self.bb_boss_spawn_timer <= 0:
+            self.bb_boss_spawn_timer = max(2.0, 6.0 - self.bb_boss_phase * 1.5)
+            if len(self.bb_minions) < 3 + self.bb_boss_phase:
+                self.bb_minions.append({
+                    'col': self.bb_boss_col, 'row': self.bb_boss_row,
+                    'x': self.bb_boss_x, 'y': self.bb_boss_y,
+                    'dir': random.randint(0, 3),
+                    'next_col': self.bb_boss_col, 'next_row': self.bb_boss_row,
+                    'move_progress': 0,
+                    'color': [RED, PINK, ORANGE, PURPLE][random.randint(0, 3)],
+                })
+
+        # ── Update minions ──
+        for m in self.bb_minions[:]:
+            m['move_progress'] += 6.0 * dt
+            if m['move_progress'] >= 1.0:
+                m['move_progress'] = 0
+                m['col'] = m['next_col']
+                m['row'] = m['next_row']
+                m['x'] = m['col'] * TILE
+                m['y'] = m['row'] * TILE
+                best_dir = m['dir']
+                best_dist = float('inf')
+                dirs = [0, 1, 2, 3]
+                random.shuffle(dirs)
+                target_col = self.bb_pac_col
+                target_row = self.bb_pac_row
+                # Sometimes target an ally instead
+                if self.bb_allies and random.random() < 0.3:
+                    alive_allies = [a for a in self.bb_allies if a['alive']]
+                    if alive_allies:
+                        t = random.choice(alive_allies)
+                        target_col, target_row = t['col'], t['row']
+                for d in dirs:
+                    nc = m['col'] + dc_map[d]
+                    nr = m['row'] + dr_map[d]
+                    if nc < 0: nc = COLS - 1
+                    if nc >= COLS: nc = 0
+                    if 0 <= nr < ROWS and self.bb_maze[nr][nc] not in (1, 4, 5):
+                        dist = (nc - target_col) ** 2 + (nr - target_row) ** 2
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_dir = d
+                            m['next_col'] = nc
+                            m['next_row'] = nr
+                m['dir'] = best_dir
+            else:
+                m['x'] = m['col'] * TILE + (m['next_col'] - m['col']) * TILE * m['move_progress']
+                m['y'] = m['row'] * TILE + (m['next_row'] - m['row']) * TILE * m['move_progress']
+
+            # Minion vs pellet collision
+            for p in self.bb_pellets[:]:
+                dist = math.sqrt((p['x'] - m['x'] - TILE // 2) ** 2 + (p['y'] - 40 - m['y'] - TILE // 2) ** 2)
+                if dist < TILE * 0.7:
+                    self.particles.emit_ghost_eat(int(m['x']) + TILE // 2, int(m['y']) + TILE // 2 + 40, m['color'])
+                    self.bb_score += 200
+                    self.popups.add(int(m['x']) + TILE // 2, int(m['y']) + TILE // 2 + 40, '+200', CYAN, self.font_popup)
+                    self.sfx_channel.play(snd_eat_ghost)
+                    if p in self.bb_pellets:
+                        self.bb_pellets.remove(p)
+                    if m in self.bb_minions:
+                        self.bb_minions.remove(m)
+                    break
+
+        # ── Collision: boss/minions vs player ──
+        if self.bb_invincible <= 0:
+            boss_dist = math.sqrt((self.bb_boss_x - self.bb_pac_x) ** 2 + (self.bb_boss_y - self.bb_pac_y) ** 2)
+            if boss_dist < TILE * 1.8:
+                self.bb_lives -= 1
+                self.bb_invincible = 2.0
+                self.shake.start(8, 0.5)
+                self.sfx_channel.play(snd_death)
+                self.particles.emit_death(int(self.bb_pac_x) + TILE // 2, int(self.bb_pac_y) + TILE // 2 + 40)
+                if self.bb_lives <= 0:
+                    self.state = 'game_over'
+                    self.high_score = max(self.high_score, self.bb_score)
+                    self.music_channel.stop()
+                    return
+
+            for m in self.bb_minions:
+                dist = math.sqrt((m['x'] - self.bb_pac_x) ** 2 + (m['y'] - self.bb_pac_y) ** 2)
+                if dist < TILE * 0.8:
+                    self.bb_lives -= 1
+                    self.bb_invincible = 2.0
+                    self.shake.start(6, 0.3)
+                    self.sfx_channel.play(snd_death)
+                    self.particles.emit_death(int(self.bb_pac_x) + TILE // 2, int(self.bb_pac_y) + TILE // 2 + 40)
+                    if self.bb_lives <= 0:
+                        self.state = 'game_over'
+                        self.high_score = max(self.high_score, self.bb_score)
+                        self.music_channel.stop()
+                        return
+                    break
+
+        # ── Collision: boss/minions vs allies ──
+        for ally in self.bb_allies:
+            if not ally['alive']:
+                continue
+            boss_dist = math.sqrt((self.bb_boss_x - ally['x']) ** 2 + (self.bb_boss_y - ally['y']) ** 2)
+            if boss_dist < TILE * 1.5:
+                ally['alive'] = False
+                ally['respawn_timer'] = 5.0
+                self.particles.emit_death(int(ally['x']) + TILE // 2, int(ally['y']) + TILE // 2 + 40)
+                continue
+            for m in self.bb_minions:
+                dist = math.sqrt((m['x'] - ally['x']) ** 2 + (m['y'] - ally['y']) ** 2)
+                if dist < TILE * 0.8:
+                    ally['alive'] = False
+                    ally['respawn_timer'] = 5.0
+                    self.particles.emit_death(int(ally['x']) + TILE // 2, int(ally['y']) + TILE // 2 + 40)
+                    break
+
+    def _draw_boss_ghost(self, surface, x, y, frame, flash):
+        """Draw a big 2x2 tile boss ghost."""
+        size = TILE * 2
+        cx, cy = x + size // 2, y + size // 2
+        r = size // 2 - 2
+        if flash > 0 and int(flash * 20) % 2 == 0:
+            body_color = WHITE
+        else:
+            body_color = (200, 0, 0)
+
+        # Body
+        pygame.gfxdraw.filled_circle(surface, cx, cy - 4, r, body_color)
+        pygame.gfxdraw.aacircle(surface, cx, cy - 4, r, body_color)
+        pygame.draw.rect(surface, body_color, (x + 2, cy - 4, size - 4, r + 4))
+
+        # Wavy bottom
+        num_waves = 5
+        wave_w = (size - 4) / num_waves
+        for i in range(num_waves):
+            wx = x + 2 + i * wave_w
+            wy = cy + r
+            peak = 8 if (i + int(frame / 5)) % 2 == 0 else 0
+            pts = [
+                (int(wx), int(wy)),
+                (int(wx + wave_w * 0.25), int(wy + peak * 0.5)),
+                (int(wx + wave_w / 2), int(wy + peak)),
+                (int(wx + wave_w * 0.75), int(wy + peak * 0.5)),
+                (int(wx + wave_w), int(wy)),
+            ]
+            pygame.gfxdraw.filled_polygon(surface, pts, body_color)
+
+        # Angry eyes
+        for offset in [-8, 8]:
+            pygame.gfxdraw.filled_circle(surface, cx + offset, cy - 8, 6, WHITE)
+            pygame.gfxdraw.aacircle(surface, cx + offset, cy - 8, 6, WHITE)
+            pygame.gfxdraw.filled_circle(surface, cx + offset + 2, cy - 7, 3, RED)
+        # Angry eyebrows
+        pygame.draw.line(surface, (100, 0, 0), (cx - 16, cy - 18), (cx - 4, cy - 14), 2)
+        pygame.draw.line(surface, (100, 0, 0), (cx + 16, cy - 18), (cx + 4, cy - 14), 2)
+
+    def draw_boss_battle(self):
+        screen.fill(BLACK)
+        y_off = 40
+
+        # HUD
+        title = self.font_sm.render(f"⚔️ BOSS BATTLE!  SCORE: {self.bb_score}", True, YELLOW)
+        screen.blit(title, (10, 5))
+
+        # Boss HP bar
+        bar_w = 200
+        bar_h = 14
+        bar_x = WIDTH // 2 - bar_w // 2
+        bar_y = 22
+        hp_frac = max(0, self.bb_boss_hp / self.bb_boss_max_hp)
+        pygame.draw.rect(screen, (60, 0, 0), (bar_x, bar_y, bar_w, bar_h), border_radius=4)
+        if hp_frac > 0:
+            hp_col = GREEN if hp_frac > 0.5 else YELLOW if hp_frac > 0.25 else RED
+            pygame.draw.rect(screen, hp_col, (bar_x, bar_y, int(bar_w * hp_frac), bar_h), border_radius=4)
+        pygame.draw.rect(screen, WHITE, (bar_x, bar_y, bar_w, bar_h), 1, border_radius=4)
+        hp_text = self.font_xs.render(f"BOSS HP: {max(0, self.bb_boss_hp)}/{self.bb_boss_max_hp}  Phase {self.bb_boss_phase}", True, WHITE)
+        screen.blit(hp_text, (WIDTH // 2 - hp_text.get_width() // 2, bar_y - 14))
+
+        # Lives
+        lives_txt = self.font_sm.render(f"♥ x{self.bb_lives}", True, RED if self.bb_lives == 1 else YELLOW)
+        screen.blit(lives_txt, (WIDTH - lives_txt.get_width() - 10, 5))
+
+        # Maze (walls only)
+        theme = LEVEL_THEMES[0]
+        for r in range(ROWS):
+            for c in range(COLS):
+                if self.bb_maze[r][c] == 1:
+                    x = c * TILE
+                    y = r * TILE + y_off
+                    pygame.draw.rect(screen, theme['wall'], (x + 1, y + 1, TILE - 2, TILE - 2), 2, border_radius=4)
+                elif self.bb_maze[r][c] == 5:
+                    x = c * TILE
+                    y = r * TILE + y_off
+                    pygame.draw.rect(screen, theme['gate'], (x, y + TILE // 2 - 1, TILE, 3))
+
+        # Draw pellets in flight
+        for p in self.bb_pellets:
+            px, py = int(p['x']), int(p['y'])
+            pygame.draw.circle(screen, p['color'], (px, py), 4)
+            pygame.draw.circle(screen, WHITE, (px, py), 4, 1)
+
+        # Draw minions
+        for m in self.bb_minions:
+            draw_ghost(screen, int(m['x']), int(m['y']) + y_off, m['color'],
+                       m['dir'], self.frame, False)
+
+        # Draw boss ghost (big!)
+        self._draw_boss_ghost(screen, int(self.bb_boss_x), int(self.bb_boss_y) + y_off,
+                              self.frame, self.bb_boss_flash)
+        # Charging indicator
+        if self.bb_boss_charging:
+            charge_txt = self.font_xs.render("CHARGING!", True, RED)
+            screen.blit(charge_txt, (int(self.bb_boss_x) + TILE - charge_txt.get_width() // 2,
+                                     int(self.bb_boss_y) + y_off - 15))
+
+        # Draw allies
+        for ally in self.bb_allies:
+            if ally['alive']:
+                draw_pacman(screen, int(ally['x']), int(ally['y']) + y_off,
+                            ally['dir'], self.frame, color=ally['color'], shape='classic', hat='none')
+                tag = self.font_xs.render(ally['name'], True, ally['color'])
+                screen.blit(tag, (int(ally['x']) - tag.get_width() // 2 + TILE // 2,
+                                  int(ally['y']) + y_off - 12))
+
+        # Draw player (blink when invincible)
+        if self.bb_invincible <= 0 or int(self.bb_invincible * 10) % 2 == 0:
+            draw_pacman(screen, int(self.bb_pac_x), int(self.bb_pac_y) + y_off,
+                        self.bb_pac_dir, self.frame)
+
+        # Ready text
+        if self.bb_ready > 0:
+            txt = self.font_big.render("FIGHT!", True, RED)
+            screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 50))
+            hint = self.font_sm.render("SPACE to shoot pellets!", True, YELLOW)
+            screen.blit(hint, (WIDTH // 2 - hint.get_width() // 2, HEIGHT // 2 + 10))
+
+        # Win text
+        if self.bb_won:
+            txt = self.font_big.render("BOSS DEFEATED!", True, GOLD)
+            screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
+            bonus = self.font_med.render(f"+5000 BONUS!", True, YELLOW)
+            screen.blit(bonus, (WIDTH // 2 - bonus.get_width() // 2, HEIGHT // 2 + 20))
+
     # ─── MENU ────────────────────────────────────────────────────────────
     def draw_menu(self):
         screen.fill(BLACK)
@@ -2241,11 +2801,12 @@ class PacManGame:
             ("🎮  CLASSIC PAC-MAN", "classic"),
             ("👻  GHOST TAG", "ghost_tag"),
             ("⚡  PELLET FRENZY", "pellet_frenzy"),
+            ("⚔️  BOSS BATTLE", "boss_battle"),
             ("🗺️  CHOOSE LEVEL", "level_select"),
             ("🎨  CUSTOMISE PAC-MAN", "customise"),
         ]
         for i, (label, _) in enumerate(options):
-            y = 255 + i * 42
+            y = 240 + i * 36
             color = YELLOW if i == self.menu_sel else WHITE
             if i == self.menu_sel:
                 # Selection indicator
@@ -2496,7 +3057,7 @@ class PacManGame:
 
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
-                        if self.state in ['classic', 'ghost_tag', 'pellet_frenzy']:
+                        if self.state in ['classic', 'ghost_tag', 'pellet_frenzy', 'boss_battle']:
                             if self.state == 'classic' and not self.paused:
                                 self.paused = True
                             elif self.state == 'classic' and self.paused:
@@ -2512,13 +3073,13 @@ class PacManGame:
 
                     if self.state == 'menu':
                         if event.key == pygame.K_UP or event.key == pygame.K_w:
-                            self.menu_sel = (self.menu_sel - 1) % 5
+                            self.menu_sel = (self.menu_sel - 1) % 6
                             self.sfx_channel.play(snd_menu)
                         elif event.key == pygame.K_DOWN or event.key == pygame.K_s:
-                            self.menu_sel = (self.menu_sel + 1) % 5
+                            self.menu_sel = (self.menu_sel + 1) % 6
                             self.sfx_channel.play(snd_menu)
                         elif event.key == pygame.K_RETURN:
-                            modes = ['classic', 'ghost_tag', 'pellet_frenzy', 'level_select', 'customise']
+                            modes = ['classic', 'ghost_tag', 'pellet_frenzy', 'boss_battle', 'level_select', 'customise']
                             self.state = modes[self.menu_sel]
                             if self.state in ('customise', 'level_select'):
                                 self.sfx_channel.play(snd_menu)
@@ -2532,6 +3093,8 @@ class PacManGame:
                                     self.reset_ghost_tag()
                                 elif self.state == 'pellet_frenzy':
                                     self.reset_pellet_frenzy()
+                                elif self.state == 'boss_battle':
+                                    self.reset_boss_battle()
                                 self.sfx_channel.play(snd_win)
 
                     elif self.state == 'customise':
@@ -2617,6 +3180,8 @@ class PacManGame:
                 self.update_ghost_tag(dt, keys)
             elif self.state == 'pellet_frenzy':
                 self.update_pellet_frenzy(dt, keys)
+            elif self.state == 'boss_battle':
+                self.update_boss_battle(dt, keys)
 
             # Update visual effects (always, even during transitions)
             self.particles.update(dt)
@@ -2638,6 +3203,8 @@ class PacManGame:
                 self.draw_ghost_tag()
             elif self.state == 'pellet_frenzy':
                 self.draw_pellet_frenzy()
+            elif self.state == 'boss_battle':
+                self.draw_boss_battle()
             elif self.state == 'game_over':
                 self.draw_game_over()
 
