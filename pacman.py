@@ -3546,6 +3546,1395 @@ class PacManGame:
             txt = self.font_big.render("MAZE MASTER!", True, GREEN)
             screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
 
+    def _draw_mode_maze(self, maze, theme, y_offset=40):
+        wall_col = theme['wall']
+        dot_col = theme['dot']
+        pellet_col = theme['pellet']
+        gate_col = theme['gate']
+        wall_fill = tuple(max(0, c // 4) for c in wall_col)
+        for r in range(ROWS):
+            for c in range(COLS):
+                tile = maze[r][c]
+                x = c * TILE
+                y = r * TILE + y_offset
+                cx = x + TILE // 2
+                cy = y + TILE // 2
+                if tile == 1:
+                    pygame.draw.rect(screen, wall_fill, (x + 2, y + 2, TILE - 4, TILE - 4), border_radius=3)
+                    pygame.draw.rect(screen, wall_col, (x + 1, y + 1, TILE - 2, TILE - 2), 2, border_radius=4)
+                elif tile == 2:
+                    pygame.gfxdraw.filled_circle(screen, cx, cy, 2, dot_col)
+                    pygame.gfxdraw.aacircle(screen, cx, cy, 2, dot_col)
+                elif tile == 3:
+                    pulse = abs(math.sin(self.frame * 0.15))
+                    if self.frame % 20 < 15:
+                        pygame.gfxdraw.filled_circle(screen, cx, cy, int(8 + 3 * pulse), pellet_col)
+                    pygame.gfxdraw.filled_circle(screen, cx, cy, 5, WHITE)
+                    pygame.gfxdraw.aacircle(screen, cx, cy, 5, pellet_col)
+                elif tile == 5:
+                    pygame.draw.rect(screen, gate_col, (x, y + TILE // 2 - 2, TILE, 4))
+
+    def _mode_spawn_basic_ghost(self, maze, home_col, home_row, color, speed=5.6, in_house=False, release_timer=0.0):
+        direction, nc, nr = self._mode_random_dir(maze, home_col, home_row, random.randint(0, 3))
+        return {
+            'home_col': home_col, 'home_row': home_row,
+            'col': home_col, 'row': home_row,
+            'x': home_col * TILE, 'y': home_row * TILE,
+            'dir': direction, 'next_col': nc, 'next_row': nr,
+            'move_progress': 0.0, 'speed': speed,
+            'color': color, 'scared_timer': 0.0,
+            'in_house': in_house, 'release_timer': release_timer,
+            'portal_cooldown': 0.0,
+        }
+
+    def _mode_best_dir_toward(self, maze, col, row, target_col, target_row, current_dir):
+        dirs = [0, 1, 2, 3]
+        random.shuffle(dirs)
+        if current_dir in dirs:
+            dirs.remove(current_dir)
+            dirs.insert(0, current_dir)
+        best = None
+        best_score = float('inf')
+        for direction in dirs:
+            ok, nc, nr = self._bb_can_move(maze, col, row, direction)
+            if not ok:
+                continue
+            score = (nc - target_col) ** 2 + (nr - target_row) ** 2
+            if direction == current_dir:
+                score -= 0.2
+            if score < best_score:
+                best_score = score
+                best = (direction, nc, nr)
+        return best if best else (current_dir, col, row)
+
+    def _mode_bfs_step_to_tile(self, maze, start_col, start_row, target_values, current_dir):
+        visited = {(start_col, start_row)}
+        queue = [(start_col, start_row, None)]
+        head = 0
+        while head < len(queue):
+            col, row, first_dir = queue[head]
+            head += 1
+            if (col, row) != (start_col, start_row) and maze[row][col] in target_values:
+                if first_dir is not None:
+                    ok, nc, nr = self._bb_can_move(maze, start_col, start_row, first_dir)
+                    if ok:
+                        return first_dir, nc, nr
+            dirs = [0, 1, 2, 3]
+            random.shuffle(dirs)
+            if current_dir in dirs:
+                dirs.remove(current_dir)
+                dirs.insert(0, current_dir)
+            for direction in dirs:
+                ok, nc, nr = self._bb_can_move(maze, col, row, direction)
+                if ok and (nc, nr) not in visited:
+                    visited.add((nc, nr))
+                    queue.append((nc, nr, direction if first_dir is None else first_dir))
+        return self._mode_random_dir(maze, start_col, start_row, current_dir)
+
+    def _mode_finish_game_over(self, score):
+        self.state = 'game_over'
+        self.high_score = max(self.high_score, int(score))
+        self.music_channel.stop()
+        self._current_track = None
+
+    # ─── ZOMBIE MODE ─────────────────────────────────────────────────────
+    def reset_zombie(self):
+        self.zm_maze = parse_maze(MAZE_TEMPLATE)
+        self.zm_theme = LEVEL_THEMES[0]
+        self.zm_pac_col = 13
+        self.zm_pac_row = 23
+        self.zm_pac_x = self.zm_pac_col * TILE
+        self.zm_pac_y = self.zm_pac_row * TILE
+        self.zm_pac_dir = 0
+        self.zm_pac_next_dir = 0
+        self.zm_pac_next_col = self.zm_pac_col
+        self.zm_pac_next_row = self.zm_pac_row
+        self.zm_move_progress = 0.0
+        self.zm_score = 0
+        self.zm_lives = 3
+        self.zm_ready = 1.8
+        self.zm_end_timer = 0.0
+        self.zm_won = False
+        self.zm_power_timer = 0.0
+        self.zm_spawn_timer = 20.0
+        self.zm_spawn_target = 6
+        self.zm_spawned_total = 4
+        self.zm_dots_total = sum(row.count(2) + row.count(3) for row in self.zm_maze)
+        self.zm_dots_eaten = 0
+        self.zm_hostiles = []
+        self.zm_zombies = []
+        ghost_specs = [
+            (13, 14, RED, 0.8),
+            (11, 14, PINK, 1.6),
+            (15, 14, CYAN, 2.4),
+            (13, 13, ORANGE, 3.2),
+        ]
+        for col, row, color, release in ghost_specs:
+            self.zm_hostiles.append(self._mode_spawn_basic_ghost(self.zm_maze, col, row, color, speed=5.5, in_house=True, release_timer=release))
+
+    def _zm_reset_after_hit(self):
+        self.zm_pac_col = 13
+        self.zm_pac_row = 23
+        self.zm_pac_x = self.zm_pac_col * TILE
+        self.zm_pac_y = self.zm_pac_row * TILE
+        self.zm_pac_dir = 0
+        self.zm_pac_next_dir = 0
+        self.zm_pac_next_col = self.zm_pac_col
+        self.zm_pac_next_row = self.zm_pac_row
+        self.zm_move_progress = 0.0
+        self.zm_ready = 1.0
+        self.zm_power_timer = 0.0
+        for i, ghost in enumerate(self.zm_hostiles):
+            ghost['col'] = ghost['home_col']
+            ghost['row'] = ghost['home_row']
+            ghost['x'] = ghost['col'] * TILE
+            ghost['y'] = ghost['row'] * TILE
+            ghost['move_progress'] = 0.0
+            ghost['in_house'] = True
+            ghost['release_timer'] = 0.5 + i * 0.7
+            ghost['scared_timer'] = 0.0
+            ghost['portal_cooldown'] = 0.0
+            direction, nc, nr = self._mode_random_dir(self.zm_maze, ghost['col'], ghost['row'], ghost['dir'])
+            ghost['dir'] = direction
+            ghost['next_col'] = nc
+            ghost['next_row'] = nr
+
+    def _zm_convert_ghost(self, ghost):
+        if ghost in self.zm_hostiles:
+            self.zm_hostiles.remove(ghost)
+        self.zm_score += 1000
+        zx = int(ghost['x']) + TILE // 2
+        zy = int(ghost['y']) + TILE // 2 + 40
+        self.particles.emit_ghost_eat(zx, zy, ghost['color'])
+        self.popups.add(zx, zy, '+1000', GREEN, self.font_popup)
+        self.shake.start(5, 0.2)
+        self.sfx_channel.play(snd_eat_ghost)
+        zombie = {
+            'col': ghost['col'], 'row': ghost['row'],
+            'x': ghost['x'], 'y': ghost['y'],
+            'dir': ghost['dir'], 'next_col': ghost['next_col'], 'next_row': ghost['next_row'],
+            'move_progress': 0.0, 'speed': 6.2,
+            'color': GREEN,
+        }
+        self.zm_zombies.append(zombie)
+
+    def update_zombie(self, dt, keys_pressed):
+        if self.zm_end_timer > 0:
+            self.zm_end_timer -= dt
+            if self.zm_end_timer <= 0:
+                self._mode_finish_game_over(self.zm_score)
+            return
+
+        if self.zm_ready > 0:
+            self.zm_ready -= dt
+            return
+
+        if not self.music_channel.get_busy():
+            self.music_channel.play(music_chase, loops=-1)
+
+        self.zm_power_timer = max(0.0, self.zm_power_timer - dt)
+
+        if keys_pressed[pygame.K_RIGHT] or keys_pressed[pygame.K_d]:
+            self.zm_pac_next_dir = 0
+        elif keys_pressed[pygame.K_LEFT] or keys_pressed[pygame.K_a]:
+            self.zm_pac_next_dir = 1
+        elif keys_pressed[pygame.K_DOWN] or keys_pressed[pygame.K_s]:
+            self.zm_pac_next_dir = 2
+        elif keys_pressed[pygame.K_UP] or keys_pressed[pygame.K_w]:
+            self.zm_pac_next_dir = 3
+
+        self.zm_move_progress += 8.0 * dt
+        if self.zm_move_progress >= 1.0:
+            self.zm_move_progress = 0.0
+            self.zm_pac_col = self.zm_pac_next_col
+            self.zm_pac_row = self.zm_pac_next_row
+            self.zm_pac_x = self.zm_pac_col * TILE
+            self.zm_pac_y = self.zm_pac_row * TILE
+            tile = self.zm_maze[self.zm_pac_row][self.zm_pac_col]
+            px = self.zm_pac_col * TILE + TILE // 2
+            py = self.zm_pac_row * TILE + TILE // 2 + 40
+            if tile == 2:
+                self.zm_maze[self.zm_pac_row][self.zm_pac_col] = 0
+                self.zm_dots_eaten += 1
+                self.zm_score += 10
+                self.sfx_channel.play(snd_chomp)
+                self.particles.emit_dot_eat(px, py, self.zm_theme['dot'])
+            elif tile == 3:
+                self.zm_maze[self.zm_pac_row][self.zm_pac_col] = 0
+                self.zm_dots_eaten += 1
+                self.zm_score += 50
+                self.zm_power_timer = 8.0
+                self.sfx_channel.play(snd_power)
+                self.particles.emit_power_pellet(px, py)
+                self.shake.start(3, 0.2)
+                for ghost in self.zm_hostiles:
+                    ghost['scared_timer'] = 8.0
+
+            ok, nc, nr = self._bb_can_move(self.zm_maze, self.zm_pac_col, self.zm_pac_row, self.zm_pac_next_dir)
+            if ok:
+                self.zm_pac_dir = self.zm_pac_next_dir
+                self.zm_pac_next_col = nc
+                self.zm_pac_next_row = nr
+            else:
+                ok, nc, nr = self._bb_can_move(self.zm_maze, self.zm_pac_col, self.zm_pac_row, self.zm_pac_dir)
+                if ok:
+                    self.zm_pac_next_col = nc
+                    self.zm_pac_next_row = nr
+                else:
+                    self.zm_pac_next_col = self.zm_pac_col
+                    self.zm_pac_next_row = self.zm_pac_row
+        else:
+            dcol = self.zm_pac_next_col - self.zm_pac_col
+            if abs(dcol) > 1:
+                self.zm_pac_x = self.zm_pac_next_col * TILE
+            else:
+                self.zm_pac_x = self.zm_pac_col * TILE + dcol * TILE * self.zm_move_progress
+            self.zm_pac_y = self.zm_pac_row * TILE + (self.zm_pac_next_row - self.zm_pac_row) * TILE * self.zm_move_progress
+
+        if self.frame % 3 == 0:
+            self.particles.emit_trail(self.zm_pac_x + TILE // 2, self.zm_pac_y + TILE // 2 + 40, pac_custom['colour'])
+
+        if self.zm_spawned_total < self.zm_spawn_target and len(self.zm_hostiles) + len(self.zm_zombies) < self.zm_spawn_target:
+            self.zm_spawn_timer -= dt
+            if self.zm_spawn_timer <= 0:
+                color = random.choice([RED, PINK, CYAN, ORANGE, PURPLE, GOLD])
+                self.zm_hostiles.append(self._mode_spawn_basic_ghost(self.zm_maze, 13, 14, color, speed=5.8, in_house=True, release_timer=1.0))
+                self.zm_spawned_total += 1
+                self.zm_spawn_timer = 20.0
+        else:
+            self.zm_spawn_timer = max(self.zm_spawn_timer, 5.0)
+
+        for ghost in self.zm_hostiles[:]:
+            ghost['scared_timer'] = max(ghost['scared_timer'] - dt, 0.0)
+            if self.zm_power_timer > 0:
+                ghost['scared_timer'] = max(ghost['scared_timer'], self.zm_power_timer)
+            if ghost['in_house']:
+                ghost['release_timer'] -= dt
+                if ghost['release_timer'] <= 0:
+                    ghost['in_house'] = False
+                    ghost['col'] = 13
+                    ghost['row'] = 11
+                    ghost['x'] = ghost['col'] * TILE
+                    ghost['y'] = ghost['row'] * TILE
+                    direction, nc, nr = self._mode_random_dir(self.zm_maze, ghost['col'], ghost['row'], ghost['dir'])
+                    ghost['dir'] = direction
+                    ghost['next_col'] = nc
+                    ghost['next_row'] = nr
+                continue
+            ghost['move_progress'] += ghost['speed'] * dt * (0.78 if ghost['scared_timer'] > 0 else 1.0)
+            if ghost['move_progress'] >= 1.0:
+                ghost['move_progress'] = 0.0
+                ghost['col'] = ghost['next_col']
+                ghost['row'] = ghost['next_row']
+                ghost['x'] = ghost['col'] * TILE
+                ghost['y'] = ghost['row'] * TILE
+                if ghost['scared_timer'] > 0:
+                    direction, nc, nr = self._mode_random_dir(self.zm_maze, ghost['col'], ghost['row'], ghost['dir'])
+                else:
+                    direction, nc, nr = self._mode_best_dir_toward(self.zm_maze, ghost['col'], ghost['row'], self.zm_pac_col, self.zm_pac_row, ghost['dir'])
+                ghost['dir'] = direction
+                ghost['next_col'] = nc
+                ghost['next_row'] = nr
+            else:
+                dcol = ghost['next_col'] - ghost['col']
+                if abs(dcol) > 1:
+                    ghost['x'] = ghost['next_col'] * TILE
+                else:
+                    ghost['x'] = ghost['col'] * TILE + dcol * TILE * ghost['move_progress']
+                ghost['y'] = ghost['row'] * TILE + (ghost['next_row'] - ghost['row']) * TILE * ghost['move_progress']
+
+            dist = math.sqrt((ghost['x'] - self.zm_pac_x) ** 2 + (ghost['y'] - self.zm_pac_y) ** 2)
+            if dist < TILE * 0.78:
+                if ghost['scared_timer'] > 0:
+                    self._zm_convert_ghost(ghost)
+                    continue
+                self.zm_lives -= 1
+                self.sfx_channel.play(snd_death)
+                self.particles.emit_death(int(self.zm_pac_x) + TILE // 2, int(self.zm_pac_y) + TILE // 2 + 40)
+                self.shake.start(8, 0.5)
+                if self.zm_lives <= 0:
+                    self._mode_finish_game_over(self.zm_score)
+                else:
+                    self._zm_reset_after_hit()
+                return
+
+        for zombie in self.zm_zombies:
+            zombie['move_progress'] += zombie['speed'] * dt
+            if zombie['move_progress'] >= 1.0:
+                zombie['move_progress'] = 0.0
+                zombie['col'] = zombie['next_col']
+                zombie['row'] = zombie['next_row']
+                zombie['x'] = zombie['col'] * TILE
+                zombie['y'] = zombie['row'] * TILE
+                if self.zm_power_timer > 0 and self.zm_hostiles:
+                    targets = [g for g in self.zm_hostiles if not g['in_house'] and g['scared_timer'] > 0]
+                    if targets:
+                        target = min(targets, key=lambda g: abs(g['col'] - zombie['col']) + abs(g['row'] - zombie['row']))
+                        direction, nc, nr = self._mode_best_dir_toward(self.zm_maze, zombie['col'], zombie['row'], target['col'], target['row'], zombie['dir'])
+                    else:
+                        direction, nc, nr = self._mode_random_dir(self.zm_maze, zombie['col'], zombie['row'], zombie['dir'])
+                else:
+                    direction, nc, nr = self._mode_random_dir(self.zm_maze, zombie['col'], zombie['row'], zombie['dir'])
+                zombie['dir'] = direction
+                zombie['next_col'] = nc
+                zombie['next_row'] = nr
+            else:
+                dcol = zombie['next_col'] - zombie['col']
+                if abs(dcol) > 1:
+                    zombie['x'] = zombie['next_col'] * TILE
+                else:
+                    zombie['x'] = zombie['col'] * TILE + dcol * TILE * zombie['move_progress']
+                zombie['y'] = zombie['row'] * TILE + (zombie['next_row'] - zombie['row']) * TILE * zombie['move_progress']
+            if self.frame % 5 == 0:
+                self.particles.emit_trail(zombie['x'] + TILE // 2, zombie['y'] + TILE // 2 + 40, GREEN)
+
+        for zombie in self.zm_zombies:
+            for ghost in self.zm_hostiles[:]:
+                if ghost['in_house'] or ghost['scared_timer'] <= 0:
+                    continue
+                dist = math.sqrt((ghost['x'] - zombie['x']) ** 2 + (ghost['y'] - zombie['y']) ** 2)
+                if dist < TILE * 0.75:
+                    self._zm_convert_ghost(ghost)
+
+        if self.zm_spawned_total >= self.zm_spawn_target and not self.zm_hostiles and len(self.zm_zombies) >= self.zm_spawn_target:
+            self.zm_won = True
+            self.zm_end_timer = 2.8
+            self.sfx_channel.play(snd_win)
+            self.particles.emit_level_clear()
+            self.music_channel.stop()
+
+    def draw_zombie(self):
+        screen.fill((4, 18, 6))
+        y_off = 40
+        self._draw_mode_maze(self.zm_maze, self.zm_theme, y_off)
+
+        title = self.font_sm.render(f"🧟 ZOMBIE MODE  SCORE: {self.zm_score}", True, YELLOW)
+        screen.blit(title, (10, 7))
+        counter = self.font_sm.render(f"🧟 x{len(self.zm_zombies)}  HOSTILES: {len(self.zm_hostiles)}  DOTS: {self.zm_dots_eaten}/{self.zm_dots_total}", True, GREEN)
+        screen.blit(counter, (WIDTH // 2 - counter.get_width() // 2, 7))
+        lives = self.font_sm.render(f"♥ x{self.zm_lives}", True, WHITE if self.zm_lives > 1 else RED)
+        screen.blit(lives, (WIDTH - lives.get_width() - 10, 7))
+        if self.zm_power_timer > 0:
+            ptxt = self.font_sm.render(f"POWER: {self.zm_power_timer:0.1f}s", True, CYAN)
+            screen.blit(ptxt, (10, 28))
+        if self.zm_spawned_total < self.zm_spawn_target:
+            stxt = self.font_sm.render(f"NEXT GHOST IN {self.zm_spawn_timer:0.0f}s", True, ORANGE)
+            screen.blit(stxt, (WIDTH - stxt.get_width() - 10, 28))
+
+        for ghost in self.zm_hostiles:
+            if not ghost['in_house']:
+                draw_ghost(screen, int(ghost['x']), int(ghost['y']) + y_off, ghost['color'], ghost['dir'], self.frame, ghost['scared_timer'] > 0)
+        for zombie in self.zm_zombies:
+            draw_pacman(screen, int(zombie['x']), int(zombie['y']) + y_off, zombie['dir'], self.frame, color=GREEN, shape='classic', hat='none')
+        draw_pacman(screen, int(self.zm_pac_x), int(self.zm_pac_y) + y_off, self.zm_pac_dir, self.frame)
+
+        if self.zm_ready > 0:
+            txt = self.font_big.render("BUILD YOUR ZOMBIE TEAM!", True, GREEN)
+            screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
+        elif self.zm_won:
+            txt = self.font_big.render("THE ZOMBIES RULE!", True, GREEN)
+            screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
+
+    # ─── PAC-MAN ROYALE ──────────────────────────────────────────────────
+    def reset_royale(self):
+        self.ry_maze = parse_maze(MAZE_TEMPLATE)
+        self.ry_theme = LEVEL_THEMES[0]
+        self.ry_pac_col = 13
+        self.ry_pac_row = 23
+        self.ry_pac_x = self.ry_pac_col * TILE
+        self.ry_pac_y = self.ry_pac_row * TILE
+        self.ry_pac_dir = 0
+        self.ry_pac_next_dir = 0
+        self.ry_pac_next_col = self.ry_pac_col
+        self.ry_pac_next_row = self.ry_pac_row
+        self.ry_move_progress = 0.0
+        self.ry_score = 0
+        self.ry_time_left = 60.0
+        self.ry_round = 1
+        self.ry_ready = 1.5
+        self.ry_ai = []
+        self.ry_dots_total = sum(row.count(2) + row.count(3) for row in self.ry_maze)
+        self.ry_dots_eaten = 0
+        ai_specs = [
+            ('ZIPPY', CYAN, 1, 1),
+            ('CRUNCH', ORANGE, 26, 1),
+            ('PINKY', PINK, 1, 29),
+            ('LEAF', GREEN, 26, 29),
+        ]
+        for i, (name, color, col, row) in enumerate(ai_specs):
+            direction, nc, nr = self._mode_random_dir(self.ry_maze, col, row, random.randint(0, 3))
+            self.ry_ai.append({
+                'name': name, 'color': color,
+                'col': col, 'row': row, 'x': col * TILE, 'y': row * TILE,
+                'dir': direction, 'next_col': nc, 'next_row': nr,
+                'move_progress': 0.0, 'speed': 6.8 + i * 0.15,
+                'score': 0, 'stun': 0.0,
+            })
+
+    def _ry_refill_maze(self):
+        self.ry_maze = parse_maze(MAZE_TEMPLATE)
+        self.ry_dots_total = sum(row.count(2) + row.count(3) for row in self.ry_maze)
+        self.ry_dots_eaten = 0
+        self.ry_round += 1
+        self.popups.add(WIDTH // 2, 90, f"ROUND {self.ry_round}!", GOLD, self.font_popup)
+        self.particles.emit_level_clear()
+        self.shake.start(4, 0.25)
+
+    def update_royale(self, dt, keys_pressed):
+        if self.ry_ready > 0:
+            self.ry_ready -= dt
+            return
+
+        if not self.music_channel.get_busy():
+            self.music_channel.play(music_main, loops=-1)
+
+        self.ry_time_left -= dt
+        if self.ry_time_left <= 0:
+            self.ry_time_left = 0
+            self._mode_finish_game_over(self.ry_score)
+            return
+
+        if keys_pressed[pygame.K_RIGHT] or keys_pressed[pygame.K_d]:
+            self.ry_pac_next_dir = 0
+        elif keys_pressed[pygame.K_LEFT] or keys_pressed[pygame.K_a]:
+            self.ry_pac_next_dir = 1
+        elif keys_pressed[pygame.K_DOWN] or keys_pressed[pygame.K_s]:
+            self.ry_pac_next_dir = 2
+        elif keys_pressed[pygame.K_UP] or keys_pressed[pygame.K_w]:
+            self.ry_pac_next_dir = 3
+
+        self.ry_move_progress += 8.0 * dt
+        if self.ry_move_progress >= 1.0:
+            self.ry_move_progress = 0.0
+            self.ry_pac_col = self.ry_pac_next_col
+            self.ry_pac_row = self.ry_pac_next_row
+            self.ry_pac_x = self.ry_pac_col * TILE
+            self.ry_pac_y = self.ry_pac_row * TILE
+            tile = self.ry_maze[self.ry_pac_row][self.ry_pac_col]
+            if tile in (2, 3):
+                self.ry_maze[self.ry_pac_row][self.ry_pac_col] = 0
+                self.ry_score += 10
+                self.ry_dots_eaten += 1
+                self.sfx_channel.play(snd_chomp)
+                self.particles.emit_dot_eat(self.ry_pac_col * TILE + TILE // 2, self.ry_pac_row * TILE + TILE // 2 + 40, pac_custom['colour'])
+            ok, nc, nr = self._bb_can_move(self.ry_maze, self.ry_pac_col, self.ry_pac_row, self.ry_pac_next_dir)
+            if ok:
+                self.ry_pac_dir = self.ry_pac_next_dir
+                self.ry_pac_next_col = nc
+                self.ry_pac_next_row = nr
+            else:
+                ok, nc, nr = self._bb_can_move(self.ry_maze, self.ry_pac_col, self.ry_pac_row, self.ry_pac_dir)
+                if ok:
+                    self.ry_pac_next_col = nc
+                    self.ry_pac_next_row = nr
+                else:
+                    self.ry_pac_next_col = self.ry_pac_col
+                    self.ry_pac_next_row = self.ry_pac_row
+        else:
+            dcol = self.ry_pac_next_col - self.ry_pac_col
+            if abs(dcol) > 1:
+                self.ry_pac_x = self.ry_pac_next_col * TILE
+            else:
+                self.ry_pac_x = self.ry_pac_col * TILE + dcol * TILE * self.ry_move_progress
+            self.ry_pac_y = self.ry_pac_row * TILE + (self.ry_pac_next_row - self.ry_pac_row) * TILE * self.ry_move_progress
+
+        if self.frame % 3 == 0:
+            self.particles.emit_trail(self.ry_pac_x + TILE // 2, self.ry_pac_y + TILE // 2 + 40, pac_custom['colour'])
+
+        for rival in self.ry_ai:
+            rival['stun'] = max(0.0, rival['stun'] - dt)
+            if rival['stun'] > 0:
+                continue
+            rival['move_progress'] += rival['speed'] * dt
+            if rival['move_progress'] >= 1.0:
+                rival['move_progress'] = 0.0
+                rival['col'] = rival['next_col']
+                rival['row'] = rival['next_row']
+                rival['x'] = rival['col'] * TILE
+                rival['y'] = rival['row'] * TILE
+                tile = self.ry_maze[rival['row']][rival['col']]
+                if tile in (2, 3):
+                    self.ry_maze[rival['row']][rival['col']] = 0
+                    rival['score'] += 10
+                    self.ry_dots_eaten += 1
+                    self.particles.emit_dot_eat(rival['col'] * TILE + TILE // 2, rival['row'] * TILE + TILE // 2 + 40, rival['color'])
+                direction, nc, nr = self._mode_bfs_step_to_tile(self.ry_maze, rival['col'], rival['row'], (2, 3), rival['dir'])
+                rival['dir'] = direction
+                rival['next_col'] = nc
+                rival['next_row'] = nr
+            else:
+                dcol = rival['next_col'] - rival['col']
+                if abs(dcol) > 1:
+                    rival['x'] = rival['next_col'] * TILE
+                else:
+                    rival['x'] = rival['col'] * TILE + dcol * TILE * rival['move_progress']
+                rival['y'] = rival['row'] * TILE + (rival['next_row'] - rival['row']) * TILE * rival['move_progress']
+            if self.frame % 4 == 0:
+                self.particles.emit_trail(rival['x'] + TILE // 2, rival['y'] + TILE // 2 + 40, rival['color'])
+
+        for rival in self.ry_ai:
+            dist = math.sqrt((rival['x'] - self.ry_pac_x) ** 2 + (rival['y'] - self.ry_pac_y) ** 2)
+            if dist < TILE * 0.75 and rival['stun'] <= 0:
+                rival['stun'] = 0.5
+                rival['move_progress'] = 0.0
+                rival['next_col'] = rival['col']
+                rival['next_row'] = rival['row']
+                self.shake.start(2, 0.1)
+                self.sfx_channel.play(snd_menu)
+                self.popups.add(int(rival['x']) + TILE // 2, int(rival['y']) + 30, 'STUN!', WHITE, self.font_xs)
+
+        if self.ry_dots_eaten >= self.ry_dots_total:
+            self._ry_refill_maze()
+
+    def draw_royale(self):
+        screen.fill(self.ry_theme['bg'])
+        y_off = 40
+        self._draw_mode_maze(self.ry_maze, self.ry_theme, y_off)
+
+        title = self.font_sm.render(f"👑 PAC-MAN ROYALE  YOU: {self.ry_score}", True, YELLOW)
+        screen.blit(title, (10, 7))
+        timer = self.font_sm.render(f"TIME: {self.ry_time_left:0.1f}s  ROUND {self.ry_round}", True, CYAN)
+        screen.blit(timer, (WIDTH // 2 - timer.get_width() // 2, 7))
+
+        for rival in self.ry_ai:
+            draw_pacman(screen, int(rival['x']), int(rival['y']) + y_off, rival['dir'], self.frame, color=rival['color'], shape='classic', hat='none')
+            name = self.font_xs.render(rival['name'], True, rival['color'])
+            screen.blit(name, (int(rival['x']) - name.get_width() // 2 + TILE // 2, int(rival['y']) + y_off - 12))
+            if rival['stun'] > 0 and int(rival['stun'] * 18) % 2 == 0:
+                star = self.font_xs.render('★', True, WHITE)
+                screen.blit(star, (int(rival['x']) + TILE // 2 - 4, int(rival['y']) + y_off - 18))
+        draw_pacman(screen, int(self.ry_pac_x), int(self.ry_pac_y) + y_off, self.ry_pac_dir, self.frame)
+
+        board = [('TOBY', pac_custom['colour'], self.ry_score)] + [(r['name'], r['color'], r['score']) for r in self.ry_ai]
+        board.sort(key=lambda item: item[2], reverse=True)
+        box = pygame.Surface((170, 150), pygame.SRCALPHA)
+        box.fill((0, 0, 0, 150))
+        screen.blit(box, (WIDTH - 180, 48))
+        header = self.font_sm.render("LEADERBOARD", True, WHITE)
+        screen.blit(header, (WIDTH - 175, 52))
+        for i, (name, color, score) in enumerate(board[:5]):
+            line = self.font_xs.render(f"{i + 1}. {name}: {score}", True, YELLOW if name == 'TOBY' else color)
+            screen.blit(line, (WIDTH - 175, 78 + i * 24))
+
+        if self.ry_ready > 0:
+            txt = self.font_big.render("EAT FASTER THAN EVERYONE!", True, GOLD)
+            screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
+
+    # ─── SNIPER MODE ─────────────────────────────────────────────────────
+    def reset_sniper(self):
+        self.sn_maze = parse_maze(BOSS_ARENA)
+        self.sn_player_x = WIDTH // 2 - TILE // 2
+        self.sn_player_y = (ROWS - 4) * TILE
+        self.sn_score = 0
+        self.sn_lives = 3
+        self.sn_ready = 1.5
+        self.sn_end_timer = 0.0
+        self.sn_shot_cooldown = 0.0
+        self.sn_ghosts = []
+        self.sn_shots = []
+        self.sn_combo = 0
+        self.sn_kills = 0
+        self.sn_mega_charges = 0
+        self.sn_next_mega = 30
+        self.sn_elapsed = 0.0
+        self.sn_invincible = 0.0
+        self.sn_e_was_down = False
+        self.sn_aim_dir = 3
+        self.sn_gid = 0
+        self.sn_spawn_timer = 1.25
+
+    def _sn_spawn_ghost(self):
+        edge = random.choice(['top', 'bottom', 'left', 'right'])
+        if edge == 'top':
+            x = random.randint(TILE, WIDTH - TILE * 2)
+            y = 0
+        elif edge == 'bottom':
+            x = random.randint(TILE, WIDTH - TILE * 2)
+            y = (ROWS - 1) * TILE
+        elif edge == 'left':
+            x = 0
+            y = random.randint(TILE, ROWS * TILE - TILE * 2)
+        else:
+            x = (COLS - 1) * TILE
+            y = random.randint(TILE, ROWS * TILE - TILE * 2)
+        self.sn_gid += 1
+        self.sn_ghosts.append({
+            'id': self.sn_gid,
+            'x': float(x), 'y': float(y),
+            'speed': 60.0 + self.sn_elapsed * 3.0 + random.uniform(0, 18),
+            'color': random.choice([RED, PINK, CYAN, ORANGE, PURPLE]),
+            'dir': random.randint(0, 3),
+        })
+
+    def _sn_score_hit(self, x, y, color):
+        self.sn_combo = min(10, max(1, self.sn_combo + 1))
+        pts = 100 * self.sn_combo
+        self.sn_score += pts
+        self.sn_kills += 1
+        self.particles.emit_ghost_eat(int(x), int(y) + 40, color)
+        self.popups.add(int(x), int(y) + 40, f"+{pts}", color, self.font_popup)
+        self.sfx_channel.play(snd_eat_ghost)
+        while self.sn_kills >= self.sn_next_mega:
+            self.sn_mega_charges += 1
+            self.sn_next_mega += 30
+            self.popups.add(WIDTH // 2, 90, "MEGA BLAST READY!", GOLD, self.font_popup)
+            self.shake.start(4, 0.2)
+
+    def update_sniper(self, dt, keys_pressed):
+        if self.sn_end_timer > 0:
+            self.sn_end_timer -= dt
+            if self.sn_end_timer <= 0:
+                self._mode_finish_game_over(self.sn_score)
+            return
+
+        if self.sn_ready > 0:
+            self.sn_ready -= dt
+            return
+
+        if not self.music_channel.get_busy():
+            self.music_channel.play(music_chase, loops=-1)
+
+        self.sn_elapsed += dt
+        self.sn_invincible = max(0.0, self.sn_invincible - dt)
+        self.sn_shot_cooldown = max(0.0, self.sn_shot_cooldown - dt)
+
+        mx, my = pygame.mouse.get_pos()
+        px = self.sn_player_x + TILE // 2
+        py = self.sn_player_y + TILE // 2 + 40
+        dx = mx - px
+        dy = my - py
+        if abs(dx) > abs(dy):
+            self.sn_aim_dir = 0 if dx >= 0 else 1
+        else:
+            self.sn_aim_dir = 2 if dy >= 0 else 3
+
+        firing = keys_pressed[pygame.K_SPACE] or pygame.mouse.get_pressed()[0]
+        if firing and self.sn_shot_cooldown <= 0:
+            self.sn_shot_cooldown = 0.2
+            dist = max(1.0, math.sqrt(dx * dx + dy * dy))
+            self.sn_shots.append({
+                'x': float(px), 'y': float(self.sn_player_y + TILE // 2),
+                'dx': dx / dist * 520, 'dy': dy / dist * 520,
+                'life': 1.7, 'hit_any': False, 'hit_ids': set(),
+            })
+            self.sfx_channel.play(snd_chomp)
+
+        use_mega = keys_pressed[pygame.K_e] and not self.sn_e_was_down
+        self.sn_e_was_down = keys_pressed[pygame.K_e]
+        if use_mega and self.sn_mega_charges > 0:
+            self.sn_mega_charges -= 1
+            for ghost in self.sn_ghosts[:]:
+                self._sn_score_hit(ghost['x'] + TILE // 2, ghost['y'] + TILE // 2, ghost['color'])
+            self.sn_ghosts.clear()
+            self.shake.start(10, 0.35)
+            self.particles.emit_level_clear()
+            self.sfx_channel.play(snd_power)
+
+        spawn_delay = max(0.35, 1.25 - self.sn_elapsed * 0.015)
+        self.sn_spawn_timer -= dt
+        while self.sn_spawn_timer <= 0:
+            self._sn_spawn_ghost()
+            if self.sn_elapsed > 35 and random.random() < 0.35:
+                self._sn_spawn_ghost()
+            self.sn_spawn_timer += spawn_delay
+
+        for shot in self.sn_shots[:]:
+            shot['x'] += shot['dx'] * dt
+            shot['y'] += shot['dy'] * dt
+            shot['life'] -= dt
+            for ghost in self.sn_ghosts[:]:
+                if ghost['id'] in shot['hit_ids']:
+                    continue
+                dist = math.sqrt((shot['x'] - (ghost['x'] + TILE // 2)) ** 2 + (shot['y'] - (ghost['y'] + TILE // 2)) ** 2)
+                if dist < TILE * 0.6:
+                    shot['hit_any'] = True
+                    shot['hit_ids'].add(ghost['id'])
+                    self._sn_score_hit(ghost['x'] + TILE // 2, ghost['y'] + TILE // 2, ghost['color'])
+                    self.sn_ghosts.remove(ghost)
+            if shot['life'] <= 0 or shot['x'] < -20 or shot['x'] > WIDTH + 20 or shot['y'] < -20 or shot['y'] > ROWS * TILE + 20:
+                if not shot['hit_any']:
+                    self.sn_combo = 0
+                self.sn_shots.remove(shot)
+
+        px_world = self.sn_player_x + TILE // 2
+        py_world = self.sn_player_y + TILE // 2
+        for ghost in self.sn_ghosts[:]:
+            dx = px_world - (ghost['x'] + TILE // 2)
+            dy = py_world - (ghost['y'] + TILE // 2)
+            dist = max(0.001, math.sqrt(dx * dx + dy * dy))
+            ghost['x'] += dx / dist * ghost['speed'] * dt
+            ghost['y'] += dy / dist * ghost['speed'] * dt
+            if abs(dx) > abs(dy):
+                ghost['dir'] = 0 if dx > 0 else 1
+            else:
+                ghost['dir'] = 2 if dy > 0 else 3
+            if dist < TILE * 0.8 and self.sn_invincible <= 0:
+                self.sn_lives -= 1
+                self.sn_invincible = 1.0
+                self.particles.emit_death(px_world, py_world + 40)
+                self.shake.start(8, 0.4)
+                self.sfx_channel.play(snd_death)
+                self.sn_ghosts.remove(ghost)
+                self.sn_combo = 0
+                if self.sn_lives <= 0:
+                    self._mode_finish_game_over(self.sn_score)
+                    return
+            elif self.frame % 5 == 0:
+                self.particles.emit_trail(ghost['x'] + TILE // 2, ghost['y'] + TILE // 2 + 40, ghost['color'])
+
+    def draw_sniper(self):
+        screen.fill((8, 4, 18))
+        y_off = 40
+
+        title = self.font_sm.render(f"🎯 SNIPER MODE  SCORE: {self.sn_score}", True, YELLOW)
+        screen.blit(title, (10, 7))
+        combo = self.font_sm.render(f"COMBO x{max(1, self.sn_combo)}", True, GOLD if self.sn_combo >= 2 else WHITE)
+        screen.blit(combo, (WIDTH // 2 - combo.get_width() // 2, 7))
+        info = self.font_sm.render(f"♥ x{self.sn_lives}   MEGA: {self.sn_mega_charges}   COOLDOWN: {self.sn_shot_cooldown:0.1f}", True, CYAN)
+        screen.blit(info, (WIDTH - info.get_width() - 10, 7))
+
+        for r in range(ROWS):
+            for c in range(COLS):
+                if self.sn_maze[r][c] == 1:
+                    pygame.draw.rect(screen, PURPLE, (c * TILE + 2, r * TILE + y_off + 2, TILE - 4, TILE - 4), 2, border_radius=4)
+
+        for shot in self.sn_shots:
+            sx = int(shot['x'])
+            sy = int(shot['y']) + y_off
+            pygame.draw.circle(screen, pac_custom['colour'], (sx, sy), 4)
+            pygame.draw.circle(screen, WHITE, (sx, sy), 4, 1)
+
+        for ghost in self.sn_ghosts:
+            draw_ghost(screen, int(ghost['x']), int(ghost['y']) + y_off, ghost['color'], ghost['dir'], self.frame, False)
+
+        if self.sn_invincible <= 0 or int(self.sn_invincible * 14) % 2 == 0:
+            draw_pacman(screen, int(self.sn_player_x), int(self.sn_player_y) + y_off, self.sn_aim_dir, self.frame)
+        pygame.draw.circle(screen, GREY, (int(self.sn_player_x) + TILE // 2, int(self.sn_player_y) + y_off + TILE // 2 + 10), 20, 2)
+
+        mx, my = pygame.mouse.get_pos()
+        pygame.draw.line(screen, pac_custom['colour'], (mx - 10, my), (mx + 10, my), 2)
+        pygame.draw.line(screen, pac_custom['colour'], (mx, my - 10), (mx, my + 10), 2)
+        pygame.draw.circle(screen, pac_custom['colour'], (mx, my), 8, 1)
+
+        if self.sn_ready > 0:
+            txt = self.font_big.render("LOCK... AIM... CHOMP!", True, GOLD)
+            screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
+            hint = self.font_med.render("Mouse to aim  •  CLICK / SPACE to fire  •  E = MEGA BLAST", True, WHITE)
+            screen.blit(hint, (WIDTH // 2 - hint.get_width() // 2, HEIGHT // 2 + 10))
+
+    # ─── PORTAL MADNESS ──────────────────────────────────────────────────
+    def reset_portal(self):
+        self.pt_maze = parse_maze(MAZE_TEMPLATE)
+        self.pt_theme = LEVEL_THEMES[0]
+        self.pt_pac_col = 13
+        self.pt_pac_row = 23
+        self.pt_pac_x = self.pt_pac_col * TILE
+        self.pt_pac_y = self.pt_pac_row * TILE
+        self.pt_pac_dir = 0
+        self.pt_pac_next_dir = 0
+        self.pt_pac_next_col = self.pt_pac_col
+        self.pt_pac_next_row = self.pt_pac_row
+        self.pt_move_progress = 0.0
+        self.pt_score = 0
+        self.pt_lives = 3
+        self.pt_ready = 1.6
+        self.pt_end_timer = 0.0
+        self.pt_won = False
+        self.pt_power_timer = 0.0
+        self.pt_combo = 0
+        self.pt_dots_total = sum(row.count(2) + row.count(3) for row in self.pt_maze)
+        self.pt_dots_eaten = 0
+        self.pt_portals = []
+        self.pt_portal_timer = 10.0
+        self.pt_portal_cooldown = 0.0
+        self.pt_ghosts = []
+        ghost_specs = [
+            (13, 11, RED, False, 0.0),
+            (13, 14, PINK, True, 1.0),
+            (11, 14, CYAN, True, 2.0),
+            (15, 14, ORANGE, True, 3.0),
+        ]
+        for col, row, color, in_house, release in ghost_specs:
+            self.pt_ghosts.append(self._mode_spawn_basic_ghost(self.pt_maze, col, row, color, speed=5.5, in_house=in_house, release_timer=release))
+
+    def _pt_spawn_portal_pair(self):
+        occupied = {ghost['col'] * 100 + ghost['row'] for ghost in self.pt_ghosts if not ghost['in_house']}
+        choices = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                key = c * 100 + r
+                if self.pt_maze[r][c] in (0, 2, 3) and key not in occupied:
+                    if all((c, r) != pair['a'] and (c, r) != pair['b'] for pair in self.pt_portals):
+                        if abs(c - self.pt_pac_col) + abs(r - self.pt_pac_row) > 4:
+                            choices.append((c, r))
+        if len(choices) < 2:
+            return
+        a = random.choice(choices)
+        choices = [tile for tile in choices if tile != a]
+        b = random.choice(choices)
+        colors = [BLUE, ORANGE, GREEN]
+        self.pt_portals.append({'a': a, 'b': b, 'color': colors[len(self.pt_portals) % len(colors)], 'spin': random.random() * math.pi})
+        if len(self.pt_portals) > 3:
+            self.pt_portals.pop(0)
+
+    def _pt_apply_portal(self, col, row, cooldown):
+        if cooldown > 0:
+            return col, row, cooldown, False
+        for pair in self.pt_portals:
+            if (col, row) == pair['a']:
+                return pair['b'][0], pair['b'][1], 1.0, True
+            if (col, row) == pair['b']:
+                return pair['a'][0], pair['a'][1], 1.0, True
+        return col, row, cooldown, False
+
+    def _pt_reset_after_hit(self):
+        self.pt_pac_col = 13
+        self.pt_pac_row = 23
+        self.pt_pac_x = self.pt_pac_col * TILE
+        self.pt_pac_y = self.pt_pac_row * TILE
+        self.pt_pac_dir = 0
+        self.pt_pac_next_dir = 0
+        self.pt_pac_next_col = self.pt_pac_col
+        self.pt_pac_next_row = self.pt_pac_row
+        self.pt_move_progress = 0.0
+        self.pt_ready = 1.0
+        self.pt_power_timer = 0.0
+        self.pt_portal_cooldown = 0.0
+        for i, ghost in enumerate(self.pt_ghosts):
+            ghost['col'] = ghost['home_col']
+            ghost['row'] = ghost['home_row']
+            ghost['x'] = ghost['col'] * TILE
+            ghost['y'] = ghost['row'] * TILE
+            ghost['move_progress'] = 0.0
+            ghost['scared_timer'] = 0.0
+            ghost['portal_cooldown'] = 0.0
+            ghost['in_house'] = i != 0
+            ghost['release_timer'] = 0.0 if i == 0 else i * 1.0
+            direction, nc, nr = self._mode_random_dir(self.pt_maze, ghost['col'], ghost['row'], ghost['dir'])
+            ghost['dir'] = direction
+            ghost['next_col'] = nc
+            ghost['next_row'] = nr
+
+    def update_portal(self, dt, keys_pressed):
+        if self.pt_end_timer > 0:
+            self.pt_end_timer -= dt
+            if self.pt_end_timer <= 0:
+                self._mode_finish_game_over(self.pt_score)
+            return
+
+        if self.pt_ready > 0:
+            self.pt_ready -= dt
+            return
+
+        if not self.music_channel.get_busy():
+            self.music_channel.play(music_main, loops=-1)
+
+        self.pt_power_timer = max(0.0, self.pt_power_timer - dt)
+        self.pt_portal_cooldown = max(0.0, self.pt_portal_cooldown - dt)
+        self.pt_portal_timer -= dt
+        if self.pt_portal_timer <= 0:
+            self._pt_spawn_portal_pair()
+            self.pt_portal_timer = 10.0
+
+        if keys_pressed[pygame.K_RIGHT] or keys_pressed[pygame.K_d]:
+            self.pt_pac_next_dir = 0
+        elif keys_pressed[pygame.K_LEFT] or keys_pressed[pygame.K_a]:
+            self.pt_pac_next_dir = 1
+        elif keys_pressed[pygame.K_DOWN] or keys_pressed[pygame.K_s]:
+            self.pt_pac_next_dir = 2
+        elif keys_pressed[pygame.K_UP] or keys_pressed[pygame.K_w]:
+            self.pt_pac_next_dir = 3
+
+        self.pt_move_progress += 8.0 * dt
+        if self.pt_move_progress >= 1.0:
+            self.pt_move_progress = 0.0
+            self.pt_pac_col = self.pt_pac_next_col
+            self.pt_pac_row = self.pt_pac_next_row
+            self.pt_pac_x = self.pt_pac_col * TILE
+            self.pt_pac_y = self.pt_pac_row * TILE
+            tile = self.pt_maze[self.pt_pac_row][self.pt_pac_col]
+            px = self.pt_pac_col * TILE + TILE // 2
+            py = self.pt_pac_row * TILE + TILE // 2 + 40
+            if tile == 2:
+                self.pt_maze[self.pt_pac_row][self.pt_pac_col] = 0
+                self.pt_score += 10
+                self.pt_dots_eaten += 1
+                self.sfx_channel.play(snd_chomp)
+                self.particles.emit_dot_eat(px, py, self.pt_theme['dot'])
+            elif tile == 3:
+                self.pt_maze[self.pt_pac_row][self.pt_pac_col] = 0
+                self.pt_score += 50
+                self.pt_dots_eaten += 1
+                self.pt_combo = 0
+                self.pt_power_timer = 7.0
+                self.sfx_channel.play(snd_power)
+                self.particles.emit_power_pellet(px, py)
+                self.shake.start(3, 0.15)
+                for ghost in self.pt_ghosts:
+                    ghost['scared_timer'] = 7.0
+            self.pt_pac_col, self.pt_pac_row, self.pt_portal_cooldown, warped = self._pt_apply_portal(self.pt_pac_col, self.pt_pac_row, self.pt_portal_cooldown)
+            if warped:
+                self.pt_pac_x = self.pt_pac_col * TILE
+                self.pt_pac_y = self.pt_pac_row * TILE
+                self.particles.emit_power_pellet(self.pt_pac_x + TILE // 2, self.pt_pac_y + TILE // 2 + 40)
+                self.sfx_channel.play(snd_menu)
+            ok, nc, nr = self._bb_can_move(self.pt_maze, self.pt_pac_col, self.pt_pac_row, self.pt_pac_next_dir)
+            if ok:
+                self.pt_pac_dir = self.pt_pac_next_dir
+                self.pt_pac_next_col = nc
+                self.pt_pac_next_row = nr
+            else:
+                ok, nc, nr = self._bb_can_move(self.pt_maze, self.pt_pac_col, self.pt_pac_row, self.pt_pac_dir)
+                if ok:
+                    self.pt_pac_next_col = nc
+                    self.pt_pac_next_row = nr
+                else:
+                    self.pt_pac_next_col = self.pt_pac_col
+                    self.pt_pac_next_row = self.pt_pac_row
+        else:
+            dcol = self.pt_pac_next_col - self.pt_pac_col
+            if abs(dcol) > 1:
+                self.pt_pac_x = self.pt_pac_next_col * TILE
+            else:
+                self.pt_pac_x = self.pt_pac_col * TILE + dcol * TILE * self.pt_move_progress
+            self.pt_pac_y = self.pt_pac_row * TILE + (self.pt_pac_next_row - self.pt_pac_row) * TILE * self.pt_move_progress
+
+        if self.frame % 3 == 0:
+            self.particles.emit_trail(self.pt_pac_x + TILE // 2, self.pt_pac_y + TILE // 2 + 40, pac_custom['colour'])
+
+        for ghost in self.pt_ghosts:
+            ghost['scared_timer'] = max(0.0, ghost['scared_timer'] - dt)
+            ghost['portal_cooldown'] = max(0.0, ghost['portal_cooldown'] - dt)
+            if ghost['in_house']:
+                ghost['release_timer'] -= dt
+                if ghost['release_timer'] <= 0:
+                    ghost['in_house'] = False
+                    ghost['col'] = 13
+                    ghost['row'] = 11
+                    ghost['x'] = ghost['col'] * TILE
+                    ghost['y'] = ghost['row'] * TILE
+                    direction, nc, nr = self._mode_random_dir(self.pt_maze, ghost['col'], ghost['row'], ghost['dir'])
+                    ghost['dir'] = direction
+                    ghost['next_col'] = nc
+                    ghost['next_row'] = nr
+                continue
+            ghost['move_progress'] += ghost['speed'] * dt * (0.82 if ghost['scared_timer'] > 0 else 1.0)
+            if ghost['move_progress'] >= 1.0:
+                ghost['move_progress'] = 0.0
+                ghost['col'] = ghost['next_col']
+                ghost['row'] = ghost['next_row']
+                ghost['x'] = ghost['col'] * TILE
+                ghost['y'] = ghost['row'] * TILE
+                ghost['col'], ghost['row'], ghost['portal_cooldown'], warped = self._pt_apply_portal(ghost['col'], ghost['row'], ghost['portal_cooldown'])
+                if warped:
+                    ghost['x'] = ghost['col'] * TILE
+                    ghost['y'] = ghost['row'] * TILE
+                if ghost['scared_timer'] > 0:
+                    direction, nc, nr = self._mode_random_dir(self.pt_maze, ghost['col'], ghost['row'], ghost['dir'])
+                else:
+                    direction, nc, nr = self._mode_best_dir_toward(self.pt_maze, ghost['col'], ghost['row'], self.pt_pac_col, self.pt_pac_row, ghost['dir'])
+                ghost['dir'] = direction
+                ghost['next_col'] = nc
+                ghost['next_row'] = nr
+            else:
+                dcol = ghost['next_col'] - ghost['col']
+                if abs(dcol) > 1:
+                    ghost['x'] = ghost['next_col'] * TILE
+                else:
+                    ghost['x'] = ghost['col'] * TILE + dcol * TILE * ghost['move_progress']
+                ghost['y'] = ghost['row'] * TILE + (ghost['next_row'] - ghost['row']) * TILE * ghost['move_progress']
+
+            dist = math.sqrt((ghost['x'] - self.pt_pac_x) ** 2 + (ghost['y'] - self.pt_pac_y) ** 2)
+            if dist < TILE * 0.78:
+                if ghost['scared_timer'] > 0:
+                    self.pt_combo += 1
+                    pts = 200 * self.pt_combo
+                    self.pt_score += pts
+                    self.particles.emit_ghost_eat(int(ghost['x']) + TILE // 2, int(ghost['y']) + TILE // 2 + 40, ghost['color'])
+                    self.popups.add(int(ghost['x']) + TILE // 2, int(ghost['y']) + TILE // 2 + 40, f"+{pts}", CYAN, self.font_popup)
+                    self.sfx_channel.play(snd_eat_ghost)
+                    ghost['col'] = ghost['home_col']
+                    ghost['row'] = ghost['home_row']
+                    ghost['x'] = ghost['col'] * TILE
+                    ghost['y'] = ghost['row'] * TILE
+                    ghost['move_progress'] = 0.0
+                    ghost['in_house'] = True
+                    ghost['release_timer'] = 2.5
+                    ghost['scared_timer'] = 0.0
+                    direction, nc, nr = self._mode_random_dir(self.pt_maze, ghost['col'], ghost['row'], ghost['dir'])
+                    ghost['dir'] = direction
+                    ghost['next_col'] = nc
+                    ghost['next_row'] = nr
+                else:
+                    self.pt_lives -= 1
+                    self.pt_combo = 0
+                    self.sfx_channel.play(snd_death)
+                    self.particles.emit_death(int(self.pt_pac_x) + TILE // 2, int(self.pt_pac_y) + TILE // 2 + 40)
+                    self.shake.start(8, 0.4)
+                    if self.pt_lives <= 0:
+                        self._mode_finish_game_over(self.pt_score)
+                    else:
+                        self._pt_reset_after_hit()
+                    return
+
+        if self.pt_dots_eaten >= self.pt_dots_total:
+            self.pt_won = True
+            self.pt_end_timer = 2.5
+            self.sfx_channel.play(snd_win)
+            self.particles.emit_level_clear()
+            self.music_channel.stop()
+
+    def draw_portal(self):
+        screen.fill((2, 8, 20))
+        y_off = 40
+        self._draw_mode_maze(self.pt_maze, self.pt_theme, y_off)
+
+        title = self.font_sm.render(f"🌀 PORTAL MADNESS  SCORE: {self.pt_score}", True, YELLOW)
+        screen.blit(title, (10, 7))
+        info = self.font_sm.render(f"PORTALS: {len(self.pt_portals)}  DOTS: {self.pt_dots_eaten}/{self.pt_dots_total}", True, CYAN)
+        screen.blit(info, (WIDTH // 2 - info.get_width() // 2, 7))
+        lives = self.font_sm.render(f"♥ x{self.pt_lives}", True, WHITE if self.pt_lives > 1 else RED)
+        screen.blit(lives, (WIDTH - lives.get_width() - 10, 7))
+
+        for pair in self.pt_portals:
+            pair['spin'] += 0.08
+            for col, row in [pair['a'], pair['b']]:
+                cx = col * TILE + TILE // 2
+                cy = row * TILE + TILE // 2 + y_off
+                for ring in range(3):
+                    radius = 6 + ring * 3 + int(math.sin(pair['spin'] + ring) * 1.5)
+                    pygame.draw.circle(screen, pair['color'], (cx, cy), radius, 2)
+                orb_x = cx + int(math.cos(pair['spin']) * 8)
+                orb_y = cy + int(math.sin(pair['spin']) * 8)
+                pygame.draw.circle(screen, WHITE, (orb_x, orb_y), 2)
+
+        for ghost in self.pt_ghosts:
+            if not ghost['in_house']:
+                draw_ghost(screen, int(ghost['x']), int(ghost['y']) + y_off, ghost['color'], ghost['dir'], self.frame, ghost['scared_timer'] > 0)
+        draw_pacman(screen, int(self.pt_pac_x), int(self.pt_pac_y) + y_off, self.pt_pac_dir, self.frame)
+
+        if self.pt_ready > 0:
+            txt = self.font_big.render("PORTALS ARE POPPING OPEN!", True, CYAN)
+            screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
+        elif self.pt_won:
+            txt = self.font_big.render("PORTAL MASTER!", True, GREEN)
+            screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
+
+    # ─── BOMB MODE ───────────────────────────────────────────────────────
+    def reset_bomb(self):
+        self.bm_maze = parse_maze(MAZE_TEMPLATE)
+        self.bm_theme = LEVEL_THEMES[3]
+        self.bm_pac_col = 13
+        self.bm_pac_row = 23
+        self.bm_pac_x = self.bm_pac_col * TILE
+        self.bm_pac_y = self.bm_pac_row * TILE
+        self.bm_pac_dir = 0
+        self.bm_pac_next_dir = 0
+        self.bm_pac_next_col = self.bm_pac_col
+        self.bm_pac_next_row = self.bm_pac_row
+        self.bm_move_progress = 0.0
+        self.bm_score = 0
+        self.bm_lives = 3
+        self.bm_ready = 1.6
+        self.bm_end_timer = 0.0
+        self.bm_won = False
+        self.bm_power_timer = 0.0
+        self.bm_combo = 0
+        self.bm_place_cooldown = 0.0
+        self.bm_invincible = 0.0
+        self.bm_bombs = []
+        self.bm_explosions = []
+        self.bm_walls_blasted = 0
+        self.bm_dots_total = sum(row.count(2) + row.count(3) for row in self.bm_maze)
+        self.bm_dots_eaten = 0
+        self.bm_ghosts = []
+        ghost_specs = [
+            (13, 11, RED, False, 0.0),
+            (13, 14, PINK, True, 1.0),
+            (11, 14, CYAN, True, 2.0),
+            (15, 14, ORANGE, True, 3.0),
+        ]
+        for col, row, color, in_house, release in ghost_specs:
+            self.bm_ghosts.append(self._mode_spawn_basic_ghost(self.bm_maze, col, row, color, speed=5.6, in_house=in_house, release_timer=release))
+
+    def _bm_player_hit(self):
+        if self.bm_invincible > 0:
+            return False
+        self.bm_lives -= 1
+        self.bm_combo = 0
+        self.bm_power_timer = 0.0
+        self.bm_invincible = 1.2
+        self.bm_ready = 1.0
+        self.bm_pac_col = 13
+        self.bm_pac_row = 23
+        self.bm_pac_x = self.bm_pac_col * TILE
+        self.bm_pac_y = self.bm_pac_row * TILE
+        self.bm_pac_next_col = self.bm_pac_col
+        self.bm_pac_next_row = self.bm_pac_row
+        self.bm_move_progress = 0.0
+        self.sfx_channel.play(snd_death)
+        self.particles.emit_death(int(self.bm_pac_x) + TILE // 2, int(self.bm_pac_y) + TILE // 2 + 40)
+        self.shake.start(8, 0.4)
+        for i, ghost in enumerate(self.bm_ghosts):
+            ghost['col'] = ghost['home_col']
+            ghost['row'] = ghost['home_row']
+            ghost['x'] = ghost['col'] * TILE
+            ghost['y'] = ghost['row'] * TILE
+            ghost['move_progress'] = 0.0
+            ghost['scared_timer'] = 0.0
+            ghost['in_house'] = i != 0
+            ghost['release_timer'] = 0.0 if i == 0 else i * 1.0
+            direction, nc, nr = self._mode_random_dir(self.bm_maze, ghost['col'], ghost['row'], ghost['dir'])
+            ghost['dir'] = direction
+            ghost['next_col'] = nc
+            ghost['next_row'] = nr
+        if self.bm_lives <= 0:
+            self._mode_finish_game_over(self.bm_score)
+            return True
+        return True
+
+    def _bm_explode(self, bomb):
+        tiles = {(bomb['col'], bomb['row'])}
+        for step in range(1, 4):
+            tiles.add((bomb['col'] + step, bomb['row']))
+            tiles.add((bomb['col'] - step, bomb['row']))
+            tiles.add((bomb['col'], bomb['row'] + step))
+            tiles.add((bomb['col'], bomb['row'] - step))
+        clean_tiles = []
+        for col, row in tiles:
+            if not (0 <= col < COLS and 0 <= row < ROWS):
+                continue
+            clean_tiles.append((col, row))
+            tile = self.bm_maze[row][col]
+            if tile == 1 and 0 < col < COLS - 1 and 0 < row < ROWS - 1:
+                self.bm_maze[row][col] = 0
+                self.bm_score += 50
+                self.bm_walls_blasted += 1
+            elif tile == 2:
+                self.bm_maze[row][col] = 0
+                self.bm_score += 10
+                self.bm_dots_eaten += 1
+            elif tile == 3:
+                self.bm_maze[row][col] = 0
+                self.bm_score += 50
+                self.bm_dots_eaten += 1
+        for ghost in self.bm_ghosts[:]:
+            if (ghost['col'], ghost['row']) in clean_tiles or (ghost['next_col'], ghost['next_row']) in clean_tiles:
+                self.bm_score += 500
+                self.particles.emit_ghost_eat(int(ghost['x']) + TILE // 2, int(ghost['y']) + TILE // 2 + 40, ghost['color'])
+                self.popups.add(int(ghost['x']) + TILE // 2, int(ghost['y']) + TILE // 2 + 40, '+500', ORANGE, self.font_popup)
+                self.bm_ghosts.remove(ghost)
+        if (self.bm_pac_col, self.bm_pac_row) in clean_tiles:
+            self._bm_player_hit()
+        self.bm_explosions.append({'tiles': clean_tiles, 'timer': 0.45})
+        self.shake.start(6, 0.2)
+        self.sfx_channel.play(snd_power)
+
+    def update_bomb(self, dt, keys_pressed):
+        if self.bm_end_timer > 0:
+            self.bm_end_timer -= dt
+            if self.bm_end_timer <= 0:
+                self._mode_finish_game_over(self.bm_score)
+            return
+
+        if self.bm_ready > 0:
+            self.bm_ready -= dt
+            return
+
+        if not self.music_channel.get_busy():
+            self.music_channel.play(music_chase, loops=-1)
+
+        self.bm_place_cooldown = max(0.0, self.bm_place_cooldown - dt)
+        self.bm_power_timer = max(0.0, self.bm_power_timer - dt)
+        self.bm_invincible = max(0.0, self.bm_invincible - dt)
+
+        place_bomb = (keys_pressed[pygame.K_SPACE] or pygame.mouse.get_pressed()[0]) and self.bm_place_cooldown <= 0 and len(self.bm_bombs) < 3
+        if place_bomb and all(bomb['col'] != self.bm_pac_col or bomb['row'] != self.bm_pac_row for bomb in self.bm_bombs):
+            self.bm_bombs.append({'col': self.bm_pac_col, 'row': self.bm_pac_row, 'timer': 3.0})
+            self.bm_place_cooldown = 2.0
+            self.sfx_channel.play(snd_menu)
+
+        if keys_pressed[pygame.K_RIGHT] or keys_pressed[pygame.K_d]:
+            self.bm_pac_next_dir = 0
+        elif keys_pressed[pygame.K_LEFT] or keys_pressed[pygame.K_a]:
+            self.bm_pac_next_dir = 1
+        elif keys_pressed[pygame.K_DOWN] or keys_pressed[pygame.K_s]:
+            self.bm_pac_next_dir = 2
+        elif keys_pressed[pygame.K_UP] or keys_pressed[pygame.K_w]:
+            self.bm_pac_next_dir = 3
+
+        self.bm_move_progress += 8.0 * dt
+        if self.bm_move_progress >= 1.0:
+            self.bm_move_progress = 0.0
+            self.bm_pac_col = self.bm_pac_next_col
+            self.bm_pac_row = self.bm_pac_next_row
+            self.bm_pac_x = self.bm_pac_col * TILE
+            self.bm_pac_y = self.bm_pac_row * TILE
+            tile = self.bm_maze[self.bm_pac_row][self.bm_pac_col]
+            px = self.bm_pac_col * TILE + TILE // 2
+            py = self.bm_pac_row * TILE + TILE // 2 + 40
+            if tile == 2:
+                self.bm_maze[self.bm_pac_row][self.bm_pac_col] = 0
+                self.bm_score += 10
+                self.bm_dots_eaten += 1
+                self.sfx_channel.play(snd_chomp)
+                self.particles.emit_dot_eat(px, py, self.bm_theme['dot'])
+            elif tile == 3:
+                self.bm_maze[self.bm_pac_row][self.bm_pac_col] = 0
+                self.bm_score += 50
+                self.bm_dots_eaten += 1
+                self.bm_combo = 0
+                self.bm_power_timer = 6.0
+                self.sfx_channel.play(snd_power)
+                self.particles.emit_power_pellet(px, py)
+                for ghost in self.bm_ghosts:
+                    ghost['scared_timer'] = 6.0
+            ok, nc, nr = self._bb_can_move(self.bm_maze, self.bm_pac_col, self.bm_pac_row, self.bm_pac_next_dir)
+            if ok:
+                self.bm_pac_dir = self.bm_pac_next_dir
+                self.bm_pac_next_col = nc
+                self.bm_pac_next_row = nr
+            else:
+                ok, nc, nr = self._bb_can_move(self.bm_maze, self.bm_pac_col, self.bm_pac_row, self.bm_pac_dir)
+                if ok:
+                    self.bm_pac_next_col = nc
+                    self.bm_pac_next_row = nr
+                else:
+                    self.bm_pac_next_col = self.bm_pac_col
+                    self.bm_pac_next_row = self.bm_pac_row
+        else:
+            dcol = self.bm_pac_next_col - self.bm_pac_col
+            if abs(dcol) > 1:
+                self.bm_pac_x = self.bm_pac_next_col * TILE
+            else:
+                self.bm_pac_x = self.bm_pac_col * TILE + dcol * TILE * self.bm_move_progress
+            self.bm_pac_y = self.bm_pac_row * TILE + (self.bm_pac_next_row - self.bm_pac_row) * TILE * self.bm_move_progress
+
+        if self.frame % 3 == 0:
+            self.particles.emit_trail(self.bm_pac_x + TILE // 2, self.bm_pac_y + TILE // 2 + 40, pac_custom['colour'])
+
+        for bomb in self.bm_bombs[:]:
+            bomb['timer'] -= dt
+            if bomb['timer'] <= 0:
+                self.bm_bombs.remove(bomb)
+                self._bm_explode(bomb)
+
+        for explosion in self.bm_explosions[:]:
+            explosion['timer'] -= dt
+            if explosion['timer'] <= 0:
+                self.bm_explosions.remove(explosion)
+
+        for ghost in self.bm_ghosts[:]:
+            ghost['scared_timer'] = max(0.0, ghost['scared_timer'] - dt)
+            if ghost['in_house']:
+                ghost['release_timer'] -= dt
+                if ghost['release_timer'] <= 0:
+                    ghost['in_house'] = False
+                    ghost['col'] = 13
+                    ghost['row'] = 11
+                    ghost['x'] = ghost['col'] * TILE
+                    ghost['y'] = ghost['row'] * TILE
+                    direction, nc, nr = self._mode_random_dir(self.bm_maze, ghost['col'], ghost['row'], ghost['dir'])
+                    ghost['dir'] = direction
+                    ghost['next_col'] = nc
+                    ghost['next_row'] = nr
+                continue
+            ghost['move_progress'] += ghost['speed'] * dt * (0.82 if ghost['scared_timer'] > 0 else 1.0)
+            if ghost['move_progress'] >= 1.0:
+                ghost['move_progress'] = 0.0
+                ghost['col'] = ghost['next_col']
+                ghost['row'] = ghost['next_row']
+                ghost['x'] = ghost['col'] * TILE
+                ghost['y'] = ghost['row'] * TILE
+                if ghost['scared_timer'] > 0:
+                    direction, nc, nr = self._mode_random_dir(self.bm_maze, ghost['col'], ghost['row'], ghost['dir'])
+                else:
+                    direction, nc, nr = self._mode_best_dir_toward(self.bm_maze, ghost['col'], ghost['row'], self.bm_pac_col, self.bm_pac_row, ghost['dir'])
+                ghost['dir'] = direction
+                ghost['next_col'] = nc
+                ghost['next_row'] = nr
+            else:
+                dcol = ghost['next_col'] - ghost['col']
+                if abs(dcol) > 1:
+                    ghost['x'] = ghost['next_col'] * TILE
+                else:
+                    ghost['x'] = ghost['col'] * TILE + dcol * TILE * ghost['move_progress']
+                ghost['y'] = ghost['row'] * TILE + (ghost['next_row'] - ghost['row']) * TILE * ghost['move_progress']
+
+            dist = math.sqrt((ghost['x'] - self.bm_pac_x) ** 2 + (ghost['y'] - self.bm_pac_y) ** 2)
+            if dist < TILE * 0.78:
+                if ghost['scared_timer'] > 0:
+                    self.bm_combo += 1
+                    pts = 200 * self.bm_combo
+                    self.bm_score += pts
+                    self.particles.emit_ghost_eat(int(ghost['x']) + TILE // 2, int(ghost['y']) + TILE // 2 + 40, ghost['color'])
+                    self.popups.add(int(ghost['x']) + TILE // 2, int(ghost['y']) + TILE // 2 + 40, f"+{pts}", CYAN, self.font_popup)
+                    self.sfx_channel.play(snd_eat_ghost)
+                    ghost['col'] = ghost['home_col']
+                    ghost['row'] = ghost['home_row']
+                    ghost['x'] = ghost['col'] * TILE
+                    ghost['y'] = ghost['row'] * TILE
+                    ghost['move_progress'] = 0.0
+                    ghost['in_house'] = True
+                    ghost['release_timer'] = 2.5
+                    ghost['scared_timer'] = 0.0
+                    direction, nc, nr = self._mode_random_dir(self.bm_maze, ghost['col'], ghost['row'], ghost['dir'])
+                    ghost['dir'] = direction
+                    ghost['next_col'] = nc
+                    ghost['next_row'] = nr
+                elif self.bm_invincible <= 0:
+                    self._bm_player_hit()
+                    return
+
+        if self.bm_dots_eaten >= self.bm_dots_total:
+            self.bm_won = True
+            self.bm_end_timer = 2.5
+            self.sfx_channel.play(snd_win)
+            self.particles.emit_level_clear()
+            self.music_channel.stop()
+
+    def draw_bomb(self):
+        screen.fill((18, 6, 2))
+        y_off = 40
+        self._draw_mode_maze(self.bm_maze, self.bm_theme, y_off)
+
+        title = self.font_sm.render(f"💣 BOMB MODE  SCORE: {self.bm_score}", True, YELLOW)
+        screen.blit(title, (10, 7))
+        info = self.font_sm.render(f"BOMBS: {3 - len(self.bm_bombs)} READY  WALLS BLASTED: {self.bm_walls_blasted}", True, ORANGE)
+        screen.blit(info, (WIDTH // 2 - info.get_width() // 2, 7))
+        lives = self.font_sm.render(f"♥ x{self.bm_lives}", True, WHITE if self.bm_lives > 1 else RED)
+        screen.blit(lives, (WIDTH - lives.get_width() - 10, 7))
+
+        for bomb in self.bm_bombs:
+            cx = bomb['col'] * TILE + TILE // 2
+            cy = bomb['row'] * TILE + TILE // 2 + y_off
+            flash = RED if int(bomb['timer'] * 6) % 2 == 0 else ORANGE
+            pygame.draw.circle(screen, flash, (cx, cy), 10)
+            pygame.draw.circle(screen, WHITE, (cx, cy), 10, 1)
+            num = self.font_xs.render(str(max(1, int(math.ceil(bomb['timer'])))), True, WHITE)
+            screen.blit(num, (cx - num.get_width() // 2, cy - num.get_height() // 2))
+
+        for explosion in self.bm_explosions:
+            alpha = int(255 * (explosion['timer'] / 0.45))
+            for col, row in explosion['tiles']:
+                blast = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+                pygame.draw.circle(blast, (255, 120, 0, alpha), (TILE // 2, TILE // 2), TILE // 2 - 2)
+                pygame.draw.circle(blast, (255, 220, 120, alpha), (TILE // 2, TILE // 2), TILE // 3)
+                screen.blit(blast, (col * TILE, row * TILE + y_off))
+
+        for ghost in self.bm_ghosts:
+            if not ghost['in_house']:
+                draw_ghost(screen, int(ghost['x']), int(ghost['y']) + y_off, ghost['color'], ghost['dir'], self.frame, ghost['scared_timer'] > 0)
+        if self.bm_invincible <= 0 or int(self.bm_invincible * 12) % 2 == 0:
+            draw_pacman(screen, int(self.bm_pac_x), int(self.bm_pac_y) + y_off, self.bm_pac_dir, self.frame)
+
+        if self.bm_ready > 0:
+            txt = self.font_big.render("DROP BOMBS TO OPEN THE MAZE!", True, ORANGE)
+            screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
+        elif self.bm_won:
+            txt = self.font_big.render("BOOM! ALL DOTS CLEARED!", True, GOLD)
+            screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
+
     # ─── MENU ────────────────────────────────────────────────────────────
     def draw_menu(self):
         screen.fill(BLACK)
@@ -3563,7 +4952,7 @@ class PacManGame:
         screen.blit(sub, (WIDTH // 2 - sub.get_width() // 2, 130))
 
         # Animated Pac-Man & ghosts on menu
-        menu_y = 180
+        menu_y = 175
         pac_x = int((self.frame * 2) % (WIDTH + 200)) - 100
         draw_pacman(screen, pac_x, menu_y, 0, self.frame, 32)
         for i, color in enumerate([RED, PINK, CYAN, ORANGE]):
@@ -3579,11 +4968,16 @@ class PacManGame:
             ("🏁  MAZE RUNNER", "maze_runner"),
             ("🛡️  SURVIVAL", "survival"),
             ("🌫️  INVISIBLE MAZE", "invisible"),
+            ("🧟  ZOMBIE MODE", "zombie"),
+            ("👑  PAC-MAN ROYALE", "royale"),
+            ("🎯  SNIPER MODE", "sniper"),
+            ("🌀  PORTAL MADNESS", "portal"),
+            ("💣  BOMB MODE", "bomb"),
             ("🗺️  CHOOSE LEVEL", "level_select"),
             ("🎨  CUSTOMISE PAC-MAN", "customise"),
         ]
         for i, (label, _) in enumerate(options):
-            y = 240 + i * 36
+            y = 220 + i * 30
             color = YELLOW if i == self.menu_sel else WHITE
             if i == self.menu_sel:
                 # Selection indicator
@@ -3591,14 +4985,14 @@ class PacManGame:
                 screen.blit(ind, (WIDTH // 2 - 175, y))
                 # Glow effect
                 pygame.draw.rect(screen, (50, 50, 0), (WIDTH // 2 - 160, y - 5,
-                                320, 40), border_radius=8)
+                                320, 32), border_radius=8)
             txt = self.font_med.render(label, True, color)
             screen.blit(txt, (WIDTH // 2 - 140, y))
 
         # High score
         if self.high_score > 0:
             hs = self.font_sm.render(f"HIGH SCORE: {self.high_score}", True, YELLOW)
-            hs_y = 240 + len(options) * 36 + 16
+            hs_y = 220 + len(options) * 30 + 12
             screen.blit(hs, (WIDTH // 2 - hs.get_width() // 2, hs_y))
 
         # Controls
@@ -3795,6 +5189,7 @@ class PacManGame:
         else:
             # Minigame score display
             detail_text = None
+            scoreboard_entries = None
             if self.last_mode == 'ghost_tag':
                 mode_name = "GHOST TAG"
                 sc = self.gt_score
@@ -3824,6 +5219,42 @@ class PacManGame:
                 result_text = f"SURVIVED {self.sv_time:.1f}s"
                 result_color = YELLOW
                 detail_text = f"Ghosts tagged: {self.sv_ghosts_eaten}"
+            elif self.last_mode == 'zombie':
+                mode_name = "ZOMBIE MODE"
+                sc = self.zm_score
+                won = getattr(self, 'zm_won', False)
+                result_text = "ZOMBIE ARMY COMPLETE!" if won else "THE GHOSTS WON!"
+                result_color = GREEN if won else RED
+                detail_text = f"Allies made: {len(self.zm_zombies)}/{self.zm_spawn_target}"
+            elif self.last_mode == 'royale':
+                mode_name = "PAC-MAN ROYALE"
+                sc = self.ry_score
+                scoreboard_entries = [('TOBY', pac_custom['colour'], self.ry_score)] + [(r['name'], r['color'], r['score']) for r in self.ry_ai]
+                scoreboard_entries.sort(key=lambda entry: entry[2], reverse=True)
+                rank = next((i + 1 for i, entry in enumerate(scoreboard_entries) if entry[0] == 'TOBY'), 5)
+                result_text = "YOU WIN THE FEAST!" if rank == 1 else f"YOU FINISHED #{rank}"
+                result_color = GREEN if rank == 1 else YELLOW if rank <= 3 else RED
+                detail_text = f"Rounds cleared: {self.ry_round}"
+            elif self.last_mode == 'sniper':
+                mode_name = "SNIPER MODE"
+                sc = self.sn_score
+                result_text = "OVERWHELMED!"
+                result_color = RED
+                detail_text = f"Ghosts blasted: {self.sn_kills}  •  Best combo x{max(1, self.sn_combo)}"
+            elif self.last_mode == 'portal':
+                mode_name = "PORTAL MADNESS"
+                sc = self.pt_score
+                won = getattr(self, 'pt_won', False)
+                result_text = "PORTAL MASTER!" if won else "TRAPPED BY GHOSTS!"
+                result_color = GREEN if won else RED
+                detail_text = f"Portals active: {len(self.pt_portals)}"
+            elif self.last_mode == 'bomb':
+                mode_name = "BOMB MODE"
+                sc = self.bm_score
+                won = getattr(self, 'bm_won', False)
+                result_text = "BOOM! YOU DID IT!" if won else "CAUGHT IN THE BLAST!"
+                result_color = GREEN if won else RED
+                detail_text = f"Walls destroyed: {self.bm_walls_blasted}"
             else:
                 mode_name = "INVISIBLE MAZE"
                 sc = self.iv_score
@@ -3843,6 +5274,15 @@ class PacManGame:
             if detail_text:
                 detail = self.font_sm.render(detail_text, True, GREY)
                 screen.blit(detail, (WIDTH // 2 - detail.get_width() // 2, 330))
+            if scoreboard_entries:
+                board_y = 370
+                header = self.font_sm.render("RANKINGS", True, WHITE)
+                screen.blit(header, (WIDTH // 2 - header.get_width() // 2, board_y))
+                board_y += 30
+                for i, (name, color, score) in enumerate(scoreboard_entries[:5]):
+                    label = self.font_sm.render(f"{i + 1}. {name}: {score}", True, YELLOW if name == 'TOBY' else color)
+                    screen.blit(label, (WIDTH // 2 - label.get_width() // 2, board_y))
+                    board_y += 28
 
         if self.high_score > 0:
             hs = self.font_sm.render(f"Personal Best: {self.high_score}", True, GREY)
@@ -3865,7 +5305,7 @@ class PacManGame:
 
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
-                        if self.state in ['classic', 'ghost_tag', 'pellet_frenzy', 'boss_battle', 'maze_runner', 'survival', 'invisible']:
+                        if self.state in ['classic', 'ghost_tag', 'pellet_frenzy', 'boss_battle', 'maze_runner', 'survival', 'invisible', 'zombie', 'royale', 'sniper', 'portal', 'bomb']:
                             if self.state == 'classic' and not self.paused:
                                 self.paused = True
                             elif self.state == 'classic' and self.paused:
@@ -3881,13 +5321,13 @@ class PacManGame:
 
                     if self.state == 'menu':
                         if event.key == pygame.K_UP or event.key == pygame.K_w:
-                            self.menu_sel = (self.menu_sel - 1) % 9
+                            self.menu_sel = (self.menu_sel - 1) % 14
                             self.sfx_channel.play(snd_menu)
                         elif event.key == pygame.K_DOWN or event.key == pygame.K_s:
-                            self.menu_sel = (self.menu_sel + 1) % 9
+                            self.menu_sel = (self.menu_sel + 1) % 14
                             self.sfx_channel.play(snd_menu)
                         elif event.key == pygame.K_RETURN:
-                            modes = ['classic', 'ghost_tag', 'pellet_frenzy', 'boss_battle', 'maze_runner', 'survival', 'invisible', 'level_select', 'customise']
+                            modes = ['classic', 'ghost_tag', 'pellet_frenzy', 'boss_battle', 'maze_runner', 'survival', 'invisible', 'zombie', 'royale', 'sniper', 'portal', 'bomb', 'level_select', 'customise']
                             self.state = modes[self.menu_sel]
                             if self.state in ('customise', 'level_select'):
                                 self.sfx_channel.play(snd_menu)
@@ -3909,6 +5349,16 @@ class PacManGame:
                                     self.reset_survival()
                                 elif self.state == 'invisible':
                                     self.reset_invisible()
+                                elif self.state == 'zombie':
+                                    self.reset_zombie()
+                                elif self.state == 'royale':
+                                    self.reset_royale()
+                                elif self.state == 'sniper':
+                                    self.reset_sniper()
+                                elif self.state == 'portal':
+                                    self.reset_portal()
+                                elif self.state == 'bomb':
+                                    self.reset_bomb()
                                 self.sfx_channel.play(snd_win)
 
                     elif self.state == 'customise':
@@ -4002,6 +5452,16 @@ class PacManGame:
                 self.update_survival(dt, keys)
             elif self.state == 'invisible':
                 self.update_invisible(dt, keys)
+            elif self.state == 'zombie':
+                self.update_zombie(dt, keys)
+            elif self.state == 'royale':
+                self.update_royale(dt, keys)
+            elif self.state == 'sniper':
+                self.update_sniper(dt, keys)
+            elif self.state == 'portal':
+                self.update_portal(dt, keys)
+            elif self.state == 'bomb':
+                self.update_bomb(dt, keys)
 
             # Update visual effects (always, even during transitions)
             self.particles.update(dt)
@@ -4031,6 +5491,16 @@ class PacManGame:
                 self.draw_survival()
             elif self.state == 'invisible':
                 self.draw_invisible()
+            elif self.state == 'zombie':
+                self.draw_zombie()
+            elif self.state == 'royale':
+                self.draw_royale()
+            elif self.state == 'sniper':
+                self.draw_sniper()
+            elif self.state == 'portal':
+                self.draw_portal()
+            elif self.state == 'bomb':
+                self.draw_bomb()
             elif self.state == 'game_over':
                 self.draw_game_over()
 
